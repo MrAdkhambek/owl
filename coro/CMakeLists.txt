@@ -1,0 +1,207 @@
+# The coroutine toolkit as a header-only library, in the canonical layout:
+# public headers under include/coro/, consumed through the include directory
+# so every #include carries its "coro/" prefix:
+#
+#     target_link_libraries(my_target PRIVATE owl::coro)
+#     #include "coro/task.h"          -- or everything at once:
+#     #include "coro/coro.h"
+#
+# Layered by dependency, and the directory order is the reading order:
+#
+#     concepts/  ->  the core types  ->  algo/, result/, run/
+#                                    ->  executors/, io/, sync/
+#
+# concepts/ names what a type must do; task.h and async_generator.h are the
+# types you make; algo/ combines awaitables, result/ turns failure into data,
+# run/ gets you into and out of coroutine-land; executors/, io/ and sync/
+# model the concepts. The one exception to the layering is
+# concepts/io_reactor.h, which needs task.h because the concept is written in
+# terms of task<wait_status>.
+
+add_library(coro INTERFACE)
+add_library(${PROJECT_NAME}::coro ALIAS coro)
+
+target_compile_features(coro INTERFACE cxx_std_23)
+
+target_include_directories(coro INTERFACE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+# FILE_SET HEADERS exports BASE_DIRS through the CMake file API. INTERFACE
+# libraries have no compile group, so without this CLion never sees -I and
+# cannot resolve the prefixed #include "coro/..." used across these headers.
+target_sources(coro INTERFACE
+        FILE_SET HEADERS
+        BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/coro/coro.h"
+        include/coro/task.h
+        include/coro/async_generator.h
+        include/coro/concepts/awaitable.h
+        include/coro/concepts/scheduler.h
+        include/coro/concepts/delayed_scheduler.h
+        include/coro/concepts/io_reactor.h
+
+        include/coro/algo/when_all.h
+        include/coro/algo/when_any.h
+        include/coro/algo/detail/leaf.h
+        include/coro/algo/fmap.h
+        include/coro/algo/combine.h
+        include/coro/algo/wait_all.h
+
+        include/coro/result/result.h
+        include/coro/result/as_result.h
+        include/coro/result/as_tuple.h
+        include/coro/result/detail/awaiter_adapter.h
+
+        include/coro/run/sync_wait.h
+        include/coro/run/schedule_on.h
+        include/coro/run/resume_on.h
+
+        include/coro/executors/static_thread_pool.h
+        include/coro/executors/detail/timed_wait_queue.h
+        include/coro/executors/timer_scheduler.h
+
+        include/coro/io/reactor.h
+
+        include/coro/sync/async_mutex.h
+)
+
+# --- Tree / manifest / umbrella consistency -------------------------------
+#
+# The umbrella rotted once before and shipped with ctest fully green (see
+# tests/test_umbrella.cpp). Discipline was the thing that failed, so the
+# guard is a build failure instead. Three lists must agree exactly:
+#
+#   1. the headers actually on disk
+#   2. the FILE_SET manifest above, which decides what installs
+#   3. the #includes in coro.h, which decide what a consumer gets
+#
+# detail/ headers are in 1 and 2 but deliberately not in 3.
+
+file(GLOB_RECURSE _coro_on_disk
+        RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/coro/*.h")
+list(SORT _coro_on_disk)
+
+get_target_property(_coro_manifest_raw coro HEADER_SET)
+set(_coro_manifest "")
+foreach (_f IN LISTS _coro_manifest_raw)
+    cmake_path(ABSOLUTE_PATH _f
+            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE
+            OUTPUT_VARIABLE _abs)
+    cmake_path(RELATIVE_PATH _abs
+            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include"
+            OUTPUT_VARIABLE _rel)
+    list(APPEND _coro_manifest "${_rel}")
+endforeach ()
+list(SORT _coro_manifest)
+
+if (NOT _coro_on_disk STREQUAL _coro_manifest)
+    set(_missing ${_coro_on_disk})
+    if (_coro_manifest)
+        list(REMOVE_ITEM _missing ${_coro_manifest})
+    endif ()
+    set(_stale ${_coro_manifest})
+    if (_coro_on_disk)
+        list(REMOVE_ITEM _stale ${_coro_on_disk})
+    endif ()
+    message(FATAL_ERROR
+            "coro: FILE_SET does not match the header tree.\n"
+            "  on disk but not in FILE_SET (would not install): ${_missing}\n"
+            "  in FILE_SET but not on disk: ${_stale}")
+endif ()
+
+set(_coro_public ${_coro_on_disk})
+list(REMOVE_ITEM _coro_public "coro/coro.h")
+list(FILTER _coro_public EXCLUDE REGEX "/detail/")
+list(SORT _coro_public)
+
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/coro/coro.h" _umbrella_lines
+        REGEX "^#include \"coro/")
+set(_coro_umbrella "")
+foreach (_line IN LISTS _umbrella_lines)
+    string(REGEX REPLACE "^#include \"([^\"]+)\".*$" "\\1" _inc "${_line}")
+    list(APPEND _coro_umbrella "${_inc}")
+endforeach ()
+list(SORT _coro_umbrella)
+
+if (NOT _coro_public STREQUAL _coro_umbrella)
+    set(_unumbrellaed ${_coro_public})
+    if (_coro_umbrella)
+        list(REMOVE_ITEM _unumbrellaed ${_coro_umbrella})
+    endif ()
+    set(_phantom ${_coro_umbrella})
+    if (_coro_public)
+        list(REMOVE_ITEM _phantom ${_coro_public})
+    endif ()
+    message(FATAL_ERROR
+            "coro: coro.h does not match the public header tree.\n"
+            "  public but not in the umbrella: ${_unumbrellaed}\n"
+            "  in the umbrella but not public (or a detail/ header): ${_phantom}")
+endif ()
+
+# static_thread_pool runs std::thread workers; carrying the linkage burden
+# here spares every consumer from remembering it.
+find_package(Threads REQUIRED)
+target_link_libraries(coro INTERFACE Threads::Threads)
+
+# The suite lives in this file rather than a tests/CMakeLists.txt. GoogleTest
+# is provided by the owl root.
+if (BUILD_TESTING)
+    # One TU per public header, each including only that header. Proves every
+    # header is self-contained -- the classic header-only defect -- and makes
+    # "compiled by nothing" impossible for headers added from here on, not
+    # just the four that were orphaned when this was written.
+    set(_coro_hdr_dir "${CMAKE_CURRENT_BINARY_DIR}/header_checks")
+    set(_coro_hdr_srcs "")
+    foreach (_h IN LISTS _coro_public)
+        string(REPLACE "/" "_" _stem "${_h}")
+        string(REPLACE ".h" "" _stem "${_stem}")
+        set(_src "${_coro_hdr_dir}/${_stem}.cpp")
+        file(CONFIGURE OUTPUT "${_src}"
+                CONTENT "// generated by coro/CMakeLists.txt -- do not edit\n#include <${_h}>\n")
+        list(APPEND _coro_hdr_srcs "${_src}")
+    endforeach ()
+
+    add_library(coro_headers OBJECT ${_coro_hdr_srcs})
+    target_link_libraries(coro_headers PRIVATE ${PROJECT_NAME}::coro)
+
+    # Takes a path under tests/ without the extension, so the suite can mirror
+    # the header tree. algo/test_fmap -> target algo_test_fmap.
+    function(coro_add_test path)
+        string(REPLACE "/" "_" name "${path}")
+        add_executable(${name} "${CMAKE_CURRENT_SOURCE_DIR}/tests/${path}.cpp")
+        target_include_directories(${name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+        target_link_libraries(${name}
+                PRIVATE
+                ${PROJECT_NAME}::coro
+                GTest::gtest_main)
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    coro_add_test(test_task)
+    coro_add_test(test_async_generator)
+    coro_add_test(test_umbrella)
+
+    coro_add_test(concepts/test_awaitable)
+
+    coro_add_test(algo/test_fmap)
+    coro_add_test(algo/test_combine)
+    coro_add_test(algo/test_wait_all)
+    coro_add_test(algo/test_when_all)
+    coro_add_test(algo/test_when_any)
+
+    coro_add_test(result/test_as_result)
+    coro_add_test(result/test_as_tuple)
+
+    coro_add_test(run/test_scheduling)
+
+    coro_add_test(executors/test_timer_scheduler)
+
+    coro_add_test(sync/test_async_mutex)
+
+    coro_add_test(io/test_reactor)
+endif ()

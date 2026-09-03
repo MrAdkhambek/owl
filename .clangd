@@ -1,0 +1,4 @@
+CompileFlags:
+  CompilationDatabase: cmake-build-debug
+  Add: [-std=c++23, -stdlib=libc++]
+QueryDriver: /usr/bin/c++

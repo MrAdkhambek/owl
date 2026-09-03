@@ -1,0 +1,46 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if (APPLE AND NOT OPENSSL_ROOT_DIR)
+    execute_process(
+            COMMAND brew --prefix openssl@3
+            OUTPUT_VARIABLE OPENSSL_ROOT_DIR
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+    )
+endif ()
+
+find_dependency(Threads)
+find_dependency(OpenSSL)
+find_dependency(ZLIB)
+find_dependency(nlohmann_json)
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(H2O REQUIRED IMPORTED_TARGET libh2o-evloop)
+
+set_and_check(owl_INCLUDE_DIR "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+
+if (NOT TARGET owl::fstr)
+    add_library(owl::fstr INTERFACE IMPORTED)
+    set_target_properties(owl::fstr PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+            INTERFACE_COMPILE_FEATURES cxx_std_23)
+endif ()
+
+if (NOT TARGET owl::coro)
+    add_library(owl::coro INTERFACE IMPORTED)
+    set_target_properties(owl::coro PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+            INTERFACE_COMPILE_FEATURES cxx_std_23
+            INTERFACE_LINK_LIBRARIES Threads::Threads)
+endif ()
+
+if (NOT TARGET owl::owl)
+    add_library(owl::owl INTERFACE IMPORTED)
+    set_target_properties(owl::owl PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+            INTERFACE_COMPILE_FEATURES cxx_std_23
+            INTERFACE_COMPILE_DEFINITIONS H2O_USE_LIBUV=0
+            INTERFACE_LINK_LIBRARIES "owl::coro;owl::fstr;PkgConfig::H2O;nlohmann_json::nlohmann_json;OpenSSL::SSL;OpenSSL::Crypto;ZLIB::ZLIB")
+endif ()

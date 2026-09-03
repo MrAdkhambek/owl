@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 760" role="img" aria-labelledby="title desc">
+  <title id="title">owl workers and event loop</title>
+  <desc id="desc">Like Node cluster: N workers, each with its own event loop. Like the Node event loop diagram: poll for I/O, run timers, hop off-thread work back, then run handlers and send. Incoming connections enter poll. A thread pool feeds the hop queue.</desc>
+  <defs>
+    <style>
+      text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+      .title { font-family: ui-sans-serif, system-ui, sans-serif; font-weight: 600; fill: #111; }
+      .note { font-family: ui-sans-serif, system-ui, sans-serif; fill: #555; }
+      .box { fill: #fff; stroke: #111; stroke-width: 1.6; }
+      .box-side { fill: #f6f8fa; stroke: #111; stroke-width: 1.6; }
+      .label { fill: #111; }
+      .sub { fill: #555; }
+      .arrow { stroke: #111; fill: none; stroke-width: 1.6; }
+    </style>
+    <marker id="head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#111"/>
+    </marker>
+  </defs>
+
+  <rect width="720" height="760" fill="#fff"/>
+
+  <!-- ── workers (Node cluster) ── -->
+  <text x="360" y="32" text-anchor="middle" class="title" font-size="15">Workers</text>
+  <text x="360" y="52" text-anchor="middle" class="note" font-size="12">one process · each worker is its own event loop</text>
+
+  <rect class="box" x="220" y="68" width="280" height="40" rx="2"/>
+  <text x="360" y="93" text-anchor="middle" class="label" font-size="13">Server  ·  Router&lt;&gt;  ·  .thread(N)</text>
+
+  <path class="arrow" d="M 360 108 L 360 128" marker-end="url(#head)"/>
+  <path class="arrow" d="M 360 118 L 130 118 L 130 138" marker-end="url(#head)"/>
+  <path class="arrow" d="M 360 118 L 590 118 L 590 138" marker-end="url(#head)"/>
+
+  <rect class="box" x="40" y="142" width="180" height="78" rx="2"/>
+  <text x="130" y="168" text-anchor="middle" class="label" font-size="13">Worker 0</text>
+  <text x="130" y="188" text-anchor="middle" class="sub" font-size="11">calling thread</text>
+  <text x="130" y="206" text-anchor="middle" class="sub" font-size="11">event loop</text>
+
+  <rect class="box" x="270" y="142" width="180" height="78" rx="2"/>
+  <text x="360" y="168" text-anchor="middle" class="label" font-size="13">Worker 1</text>
+  <text x="360" y="188" text-anchor="middle" class="sub" font-size="11">std::thread</text>
+  <text x="360" y="206" text-anchor="middle" class="sub" font-size="11">event loop</text>
+
+  <rect class="box" x="500" y="142" width="180" height="78" rx="2"/>
+  <text x="590" y="168" text-anchor="middle" class="label" font-size="13">Worker N</text>
+  <text x="590" y="188" text-anchor="middle" class="sub" font-size="11">std::thread</text>
+  <text x="590" y="206" text-anchor="middle" class="sub" font-size="11">event loop</text>
+
+  <path class="arrow" d="M 130 220 L 130 238"/>
+  <path class="arrow" d="M 360 220 L 360 238"/>
+  <path class="arrow" d="M 590 220 L 590 238"/>
+  <path class="arrow" d="M 130 238 L 590 238"/>
+  <path class="arrow" d="M 360 238 L 360 252" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="254" width="320" height="36" rx="2"/>
+  <text x="360" y="277" text-anchor="middle" class="label" font-size="12">incoming · SO_REUSEPORT · :port</text>
+
+  <!-- ── event loop (Node phases layout) ── -->
+  <text x="360" y="328" text-anchor="middle" class="title" font-size="15">Event loop</text>
+  <text x="360" y="348" text-anchor="middle" class="note" font-size="12">one worker · h2o_evloop_run · simplified overview</text>
+
+  <path class="arrow" d="M 200 634 L 70 634 L 70 378 L 200 378" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="358" width="280" height="40" rx="2"/>
+  <text x="340" y="383" text-anchor="middle" class="label" font-size="13">timers</text>
+  <path class="arrow" d="M 340 398 L 340 418" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="422" width="280" height="40" rx="2"/>
+  <text x="340" y="447" text-anchor="middle" class="label" font-size="13">poll</text>
+  <path class="arrow" d="M 500 442 L 480 442" marker-end="url(#head)"/>
+  <rect class="box-side" x="508" y="414" width="172" height="56" rx="2"/>
+  <text x="594" y="436" text-anchor="middle" class="label" font-size="12">incoming:</text>
+  <text x="594" y="454" text-anchor="middle" class="sub" font-size="11">connections, data</text>
+  <path class="arrow" d="M 340 462 L 340 482" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="486" width="280" height="40" rx="2"/>
+  <text x="340" y="511" text-anchor="middle" class="label" font-size="13">dispatch</text>
+  <text x="594" y="511" text-anchor="middle" class="sub" font-size="11">on_req · match · launch</text>
+  <path class="arrow" d="M 340 526 L 340 546" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="550" width="280" height="40" rx="2"/>
+  <text x="340" y="575" text-anchor="middle" class="label" font-size="13">hop</text>
+  <path class="arrow" d="M 500 570 L 480 570" marker-end="url(#head)"/>
+  <rect class="box-side" x="508" y="542" width="172" height="56" rx="2"/>
+  <text x="594" y="564" text-anchor="middle" class="label" font-size="12">thread pool</text>
+  <text x="594" y="582" text-anchor="middle" class="sub" font-size="11">loop.schedule()</text>
+  <path class="arrow" d="M 340 590 L 340 610" marker-end="url(#head)"/>
+
+  <rect class="box" x="200" y="614" width="280" height="40" rx="2"/>
+  <text x="340" y="639" text-anchor="middle" class="label" font-size="13">run / send</text>
+
+  <text x="360" y="710" text-anchor="middle" class="note" font-size="12">poll accepts on this worker. handlers start on this loop.</text>
+  <text x="360" y="730" text-anchor="middle" class="note" font-size="12">leave with a pool; come back through hop — never a different worker.</text>
+</svg>

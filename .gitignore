@@ -1,0 +1,15 @@
+# CMake
+cmake-build-*/
+build/
+
+# macOS
+.DS_Store
+
+# Local tools / scratch
+.idea/
+
+# AI
+.claude/
+.superpowers/
+AGENTS.md
+opencode.json
