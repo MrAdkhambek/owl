@@ -93,11 +93,11 @@ int main() {
                   .route<"/stream">(owl::get(download))
                   .with_state(state);
 
-    owl::Server server = owl::Server::builder()
-                         .router(std::move(router))
-                         .config({.port = 8080})
-                         .thread(4)
-                         .build();
+    const owl::Server server = owl::Server::builder()
+                               .router(std::move(router))
+                               .config({.port = 8080})
+                               .thread(4)
+                               .build();
 
     std::printf(
         "listening on http://127.0.0.1:%u\n  GET /ping\n  GET /hello/{name}\n  GET /calc/{number}\n  GET /hits\n  GET /sse\n  GET /stream\n  GET /api/v1/ping\n  GET /api/v1/hits\n",

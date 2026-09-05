@@ -52,21 +52,30 @@ namespace owl {
             }
         };
 
-        inline void launch_handler(const Handler* const handler, Request* const request, h2o_req_t* const req,
-                                   MatchedChains chains, const MiddlewareChain* const server_layers) {
+        inline void launch_handler(
+            const Handler* const handler,
+            Request* const request,
+            h2o_req_t* const req,
+            MatchedChains chains,
+            const MiddlewareChain* const server_layers
+        ) {
             auto* const job = std::construct_at(static_cast<SendJob*>(h2o_mem_alloc_shared(&req->pool, sizeof(SendJob), &SendJob::dispose)));
-            job->work = [](const Handler* const h, Request* const r, MatchedChains ch,
-                           const MiddlewareChain* const front) -> coro::task<> {
-                try {
-                    Terminal term{h};
-                    const auto span = ch.splice(front);
-                    const Next next{span.data, span.count, &term};
-                    auto response = co_await next(*r);
-                    co_await std::move(response).send(r->raw());
-                } catch (...) {
-                    send_error_floor(r->raw(), 500);
-                }
-            }(handler, request, std::move(chains), server_layers);
+            job->work = [](
+                const Handler* const h,
+                Request* const r,
+                MatchedChains ch,
+                const MiddlewareChain* const front
+            ) -> coro::task<> {
+                    try {
+                        Terminal term{h};
+                        const auto span = ch.splice(front);
+                        const Next next{span.data, span.count, &term};
+                        auto response = co_await next(*r);
+                        co_await std::move(response).send(r->raw());
+                    } catch (...) {
+                        send_error_floor(r->raw(), 500);
+                    }
+                }(handler, request, std::move(chains), server_layers);
             job->work.start();
         }
 
@@ -91,10 +100,9 @@ namespace owl {
                     return 0;
                 }
 
-                const MiddlewareChain* const front =
-                    dispatcher->server_layers != nullptr && !dispatcher->server_layers->empty()
-                        ? dispatcher->server_layers
-                        : nullptr;
+                const MiddlewareChain* const front = dispatcher->server_layers != nullptr && !dispatcher->server_layers->empty()
+                                                         ? dispatcher->server_layers
+                                                         : nullptr;
                 launch_handler(handler, request, req, std::move(chains), front);
             } catch (...) {
                 send_error_floor(req, 500);
@@ -147,7 +155,7 @@ namespace owl {
             return bound_port_;
         }
 
-        void start() {
+        void start() const {
             std::vector<std::thread> threads;
             threads.reserve(workers_.size() - 1);
             for (std::size_t i = 1; i < workers_.size(); ++i) {
@@ -213,7 +221,7 @@ namespace owl {
             const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
             if (fd < 0) throw std::runtime_error("owl::Server: socket() failed");
 
-            constexpr int one = 1;
+            constexpr auto one = 1;
             ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 #ifdef SO_REUSEPORT
             if (workers_.size() > 1 && ::setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, sizeof(one)) != 0) {

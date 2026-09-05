@@ -83,7 +83,7 @@ namespace owl {
         }
 
         void add_param(const std::string_view name, const std::string_view value) noexcept {
-            if (param_count_ < max_path_params) params_[param_count_++] = {name, value};
+            if (param_count_ < max_path_params) params_[param_count_++] = {.name = name, .value = value};
         }
 
         void clear_params() noexcept {
