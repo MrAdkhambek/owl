@@ -22,7 +22,6 @@ namespace owl::detail {
         h2o_context_t ctx{};
         h2o_accept_ctx_t accept_ctx{};
         h2o_socket_t* listener = nullptr;
-        h2o_multithread_receiver_t hop{};
     };
 
     template <typename S>
@@ -98,12 +97,24 @@ namespace owl::detail {
     template <typename S>
     static void on_context_init(h2o_handler_t* handler, h2o_context_t* ctx) {
         const auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(handler);
-        h2o_context_set_handler_context(ctx, handler, new Context<S>{dispatcher->state});
+        auto* const context = new Context<S>{dispatcher->state};
+        // The scheduler and its hop are born with the Context so extraction
+        // hands handlers a working loop from the first request on; the hop is
+        // registered on this context's queue, which is what makes post()
+        // safe from the pool threads.
+        h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
+        context->loop = loop_scheduler{ctx->loop, &context->hop};
+        h2o_context_set_handler_context(ctx, handler, context);
     }
 
     template <typename S>
     static void on_context_dispose(h2o_handler_t* h, h2o_context_t* ctx) {
-        delete static_cast<Context<S>*>(h2o_context_get_handler_context(ctx, h));
+        auto* const context = static_cast<Context<S>*>(h2o_context_get_handler_context(ctx, h));
+        if (context == nullptr) return;
+        // The receiver is linked into this context's queue; unlink it before
+        // the Context that owns it dies.
+        h2o_multithread_unregister_receiver(ctx->queue, &context->hop);
+        delete context;
     }
 
     template <typename S>

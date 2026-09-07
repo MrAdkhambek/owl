@@ -1,6 +1,8 @@
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -8,6 +10,7 @@
 #include <coro/run/sync_wait.h>
 #include <coro/task.h>
 
+#include <owl/coro/loop_scheduler.h>
 #include <owl/routing/router.h>
 
 namespace {
@@ -95,6 +98,18 @@ namespace {
         co_return std::move(res);
     }
 
+    coro::task<owl::Response> with_loop(owl::RequestView, owl::loop_scheduler loop) {
+        co_await loop.schedule();
+        co_return owl::Response::ok("looped");
+    }
+
+    const owl::loop_scheduler* seen_loop = nullptr;
+
+    coro::task<owl::Response> with_loop_ref(owl::RequestView, const owl::loop_scheduler& loop) {
+        seen_loop = &loop;
+        co_await loop.schedule();
+        co_return owl::Response::ok("looped");
+    }
     template <typename S>
     owl::Response run_chain(owl::Router<S>& router, Fixture& fixture, const std::string_view path,
                             const owl::Context<S>& ctx = {},
@@ -147,6 +162,91 @@ TEST(Middleware, InjectsRouterState) {
     const owl::Context<App> ctx{std::make_shared<App>(App{.n = 9})};
     fixture.send(run_chain(router, fixture, "/ping", ctx));
     EXPECT_EQ(fixture.header("x-n"), "9");
+}
+
+TEST(Middleware, ExtractsWiredLoopScheduler) {
+    h2o_globalconf_t conf{};
+    h2o_config_init(&conf);
+    h2o_config_register_host(&conf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+    h2o_context_t loop_ctx{};
+    h2o_context_init(&loop_ctx, h2o_evloop_create(), &conf);
+
+    owl::Context<App> ctx{std::make_shared<App>()};
+    h2o_multithread_register_receiver(loop_ctx.queue, &ctx.hop, &owl::detail::on_loop_hop);
+    ctx.loop = owl::loop_scheduler{loop_ctx.loop, &ctx.hop};
+
+    auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop));
+    Fixture fixture;
+    // sync_wait blocks this thread, so the loop the handler parked on has to
+    // be pumped elsewhere for the hop to land.
+    std::atomic<bool> stop{false};
+    std::thread pump{[&] {
+        while (!stop.load(std::memory_order_relaxed)) h2o_evloop_run(loop_ctx.loop, 5);
+    }};
+    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    stop.store(true, std::memory_order_relaxed);
+    pump.join();
+
+    EXPECT_EQ(fixture.req.res.status, 200);
+    EXPECT_EQ(fixture.capture.body, "looped");
+
+    h2o_multithread_unregister_receiver(loop_ctx.queue, &ctx.hop);
+    h2o_loop_t* const loop = loop_ctx.loop;
+    h2o_context_dispose(&loop_ctx);
+    h2o_evloop_destroy(loop);
+    h2o_config_dispose(&conf);
+}
+
+TEST(Middleware, UnwiredLoopSchedulerKicks500) {
+    auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop));
+    Fixture fixture;
+    const owl::Context<App> ctx{std::make_shared<App>()};
+    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    EXPECT_EQ(fixture.req.res.status, 500);
+}
+
+TEST(Middleware, ExtractsLoopSchedulerByReference) {
+    h2o_globalconf_t conf{};
+    h2o_config_init(&conf);
+    h2o_config_register_host(&conf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+    h2o_context_t loop_ctx{};
+    h2o_context_init(&loop_ctx, h2o_evloop_create(), &conf);
+
+    owl::Context<App> ctx{std::make_shared<App>()};
+    h2o_multithread_register_receiver(loop_ctx.queue, &ctx.hop, &owl::detail::on_loop_hop);
+    ctx.loop = owl::loop_scheduler{loop_ctx.loop, &ctx.hop};
+
+    auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop_ref));
+    Fixture fixture;
+    // sync_wait blocks this thread, so the loop the handler parked on has to
+    // be pumped elsewhere for the hop to land.
+    std::atomic<bool> stop{false};
+    std::thread pump{[&] {
+        while (!stop.load(std::memory_order_relaxed)) h2o_evloop_run(loop_ctx.loop, 5);
+    }};
+    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    stop.store(true, std::memory_order_relaxed);
+    pump.join();
+
+    EXPECT_EQ(fixture.req.res.status, 200);
+    EXPECT_EQ(fixture.capture.body, "looped");
+    // Zero-copy: the handler's reference must be the Context's own member,
+    // not a pipeline copy of it.
+    EXPECT_EQ(seen_loop, &ctx.loop);
+
+    h2o_multithread_unregister_receiver(loop_ctx.queue, &ctx.hop);
+    h2o_loop_t* const loop = loop_ctx.loop;
+    h2o_context_dispose(&loop_ctx);
+    h2o_evloop_destroy(loop);
+    h2o_config_dispose(&conf);
+}
+
+TEST(Middleware, UnwiredLoopRefKicks500) {
+    auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop_ref));
+    Fixture fixture;
+    const owl::Context<App> ctx{std::make_shared<App>()};
+    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    EXPECT_EQ(fixture.req.res.status, 500);
 }
 
 TEST(Middleware, NestedLayerRunsOnlyUnderPrefix) {

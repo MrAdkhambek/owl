@@ -25,7 +25,7 @@ namespace {
 
     coro::task<owl::Response> calc(
         const owl::RequestView req,
-        const owl::loop_scheduler loop,
+        const owl::loop_scheduler& loop,
         const owl::State<AppState> app,
         const owl::Path<"number", int> num
     ) {
@@ -46,14 +46,14 @@ namespace {
         co_return owl::Response::json(json, 200);
     }
 
-    owl::StreamBody ticks(const owl::loop_scheduler loop) {
+    owl::StreamBody ticks(const owl::loop_scheduler& loop) {
         for (auto i = 1; i <= 1000; ++i) {
             co_await loop.schedule_after(std::chrono::seconds{1});
             co_yield std::format("tick {}", i);
         }
     }
 
-    owl::Response sse(owl::RequestView req, owl::loop_scheduler loop) {
+    owl::Response sse(owl::RequestView req, const owl::loop_scheduler& loop) {
         return owl::Response::sse(ticks(loop));
     }
 

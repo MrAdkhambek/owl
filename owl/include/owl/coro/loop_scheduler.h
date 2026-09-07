@@ -23,9 +23,6 @@
 
 #include <coro/concepts/delayed_scheduler.h>
 
-#include "owl/extract/from_context.h"
-#include "owl/core/token.h"
-
 namespace owl {
     namespace detail {
         struct LoopHopMsg {
@@ -61,24 +58,21 @@ namespace owl {
 
     class loop_scheduler final {
     public:
-        // TLS so a handler can take loop_scheduler as an extractor
-        // without the request carrying the loop. enter/leave bracket
-        // the worker's run loop; current() is null off a worker.
-        static void enter(loop_scheduler& io) noexcept {
-            current_ = &io;
-        }
-
-        static void leave() noexcept {
-            current_ = nullptr;
-        }
-
-        [[nodiscard]] static loop_scheduler* current() noexcept {
-            return current_;
-        }
+        // Default-constructed is the null scheduler: post() into the void and
+        // a schedule() that is ready immediately. That is the value a Context
+        // carries before the dispatcher wires it, and the inert scheduler
+        // tests rely on -- never a half-initialised loop.
+        loop_scheduler() = default;
 
         explicit loop_scheduler(h2o_loop_t* const loop, h2o_multithread_receiver_t* const hop = nullptr) noexcept
             : loop_(loop),
               hop_(hop) {
+        }
+
+        // Probes the null scheduler: extraction kicks on it rather than
+        // handing out a scheduler whose post() would vanish.
+        [[nodiscard]] explicit operator bool() const noexcept {
+            return loop_ != nullptr;
         }
 
         // postable contract: callable from ordinary code. hop_ if present,
@@ -155,8 +149,6 @@ namespace owl {
         }
 
     private:
-        inline static thread_local loop_scheduler* current_ = nullptr;
-
         h2o_loop_t* loop_{};
         h2o_multithread_receiver_t* hop_{};
     };
@@ -164,15 +156,4 @@ namespace owl {
     static_assert(coro::postable<loop_scheduler>);
     static_assert(coro::scheduler<loop_scheduler>);
     static_assert(coro::delayed_scheduler<loop_scheduler>);
-
-    // Specialized here rather than in from_context.h so that header stays free
-    // of the h2o and coro dependencies this one drags in.
-    template <>
-    struct FromContext<loop_scheduler> {
-        template <typename S>
-        std::expected<loop_scheduler, KickToken> operator()(const Context<S>&, const Request&) const {
-            if (const auto* const io = loop_scheduler::current(); io != nullptr) return *io;
-            return KickToken::internal_error("not on an h2o worker");
-        }
-    };
 }

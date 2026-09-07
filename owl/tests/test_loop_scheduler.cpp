@@ -141,12 +141,3 @@ TEST(LoopScheduler, PostWithoutHopResumesOnLoop) {
     h2o_evloop_destroy(loop);
     h2o_config_dispose(&conf);
 }
-
-TEST(LoopScheduler, CurrentIsThreadLocal) {
-    owl::loop_scheduler io{nullptr, nullptr};
-    EXPECT_EQ(owl::loop_scheduler::current(), nullptr);
-    owl::loop_scheduler::enter(io);
-    EXPECT_EQ(owl::loop_scheduler::current(), &io);
-    owl::loop_scheduler::leave();
-    EXPECT_EQ(owl::loop_scheduler::current(), nullptr);
-}

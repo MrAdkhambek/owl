@@ -43,7 +43,7 @@ Link `owl::owl`. Pulls `libh2o-evloop`, `owl::coro`, `owl::fstr`, nlohmann_json,
 A handler is any free function returning `owl::Response`, or `coro::task` of one. Its parameters are extracted from the request; the route pattern is checked against them at compile time, so asking for a path parameter the pattern does not declare is a build error, not a 404.
 
 ```cpp
-coro::task<owl::Response> calc(owl::loop_scheduler loop, owl::Path<"n", int> n) {
+coro::task<owl::Response> calc(const owl::loop_scheduler& loop, owl::Path<"n", int> n) {
     co_await loop.schedule();
     co_return owl::Response::ok(std::format("{}", n.value * 2));
 }
@@ -74,7 +74,7 @@ owl::Response login(owl::RequestView) {
 | `BodyView`                           | raw body                | —                   |
 | `Json<T>`                            | JSON body               | 415 / 400 / 422     |
 | `State<T>`                           | router state            | 500                 |
-| `loop_scheduler`                     | the worker's event loop | 500                 |
+| `loop_scheduler`                     | the worker's event loop, bound with no copy when taken as `const&` | 500                 |
 
 A custom extractor is one `FromContext` specialization — the built-ins in `extract/from_context.h` are the same protocol, and make good reference. The parameter type is the value the handler receives; the specialization answers either that value or a `KickToken`, which carries any status, so `401` needs no special support:
 

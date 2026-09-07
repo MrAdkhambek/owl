@@ -4,6 +4,8 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "owl/coro/loop_scheduler.h"
+
 namespace owl {
     // Per-worker server state handed to extractors and the handler. Passed by
     // const ref through the chain; not stored on Request so HTTP stays HTTP.
@@ -24,6 +26,17 @@ namespace owl {
         Context& operator=(const Context&) = delete;
 
         std::shared_ptr<S> state;
+
+        // The worker's cross-thread wakeup for loop_scheduler::post(): the
+        // dispatcher registers it on this context's h2o queue when it wires
+        // the worker up, below.
+        h2o_multithread_receiver_t hop{};
+
+        // The worker's scheduler, wired by the dispatcher at context init and
+        // handed to handlers through extraction. Null until then: extraction
+        // kicks 500 rather than handing out a scheduler that would swallow
+        // posts into the void.
+        owl::loop_scheduler loop;
     };
 
     template <typename T>

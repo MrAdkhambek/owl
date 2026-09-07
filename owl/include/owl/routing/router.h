@@ -260,7 +260,7 @@ namespace owl {
 
             auto* const handler = endpoint.handler;
             add(M, Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
-                auto args = extract_all<std::remove_cvref_t<Args>...>(ctx, req);
+                auto args = extract_all<Args...>(ctx, req);
                 if (!args) [[unlikely]] co_return to_response(std::move(args).error());
                 if constexpr (std::is_same_v<R, Response>) {
                     co_return std::apply(handler, *std::move(args));

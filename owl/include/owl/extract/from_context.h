@@ -29,6 +29,7 @@
 #include "owl/http/request.h"
 #include "owl/http/response.h"
 #include "parse.h"
+#include "owl/coro/loop_scheduler.h"
 #include "owl/core/state.h"
 #include "owl/core/token.h"
 #include "owl/util/util.h"
@@ -78,6 +79,17 @@ namespace owl {
     // keeps call sites free of braces.
     template <class T>
     inline constexpr FromContext<T> fromContext{};
+
+    // Reference extraction, opted into per type: a handler parameter declared
+    // const T& binds the object this answers with instead of materializing a
+    // copy. The pointer must address something that outlives the request --
+    // a Context member does, a temporary dangles -- which is why only
+    // extractors able to make that guarantee offer it.
+    template <class T>
+    struct FromContextRef;
+
+    template <class T>
+    inline constexpr FromContextRef<T> fromContextRef{};
 
     // The body always exists, possibly empty, so there is no failure to
     // map; the specialization exists so BodyView is extractable at all.
@@ -215,17 +227,79 @@ namespace owl {
         }
     };
 
-    // The handler-parameter contract: FromContext must answer
-    // expected<T, KickToken>. Satisfying it -- one specialization -- is the
-    // whole registration step for a new parameter type.
+    // The worker's event loop, carried by the per-worker Context. Specialized
+    // here rather than in loop_scheduler.h: Context owns the scheduler by
+    // value, so loop_scheduler.h cannot include this header without closing
+    // an include cycle through core/state.h.
+    template <>
+    struct FromContext<loop_scheduler> {
+        template <typename S>
+        std::expected<loop_scheduler, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (ctx.loop) return ctx.loop;
+            return KickToken::internal_error("not on an h2o worker");
+        }
+    };
+
+    // The reference spelling of the loop extraction: the handler's const&
+    // binds the Context's own scheduler -- zero copies, the live per-worker
+    // member rather than a snapshot of it.
+    template <>
+    struct FromContextRef<loop_scheduler> {
+        template <typename S>
+        std::expected<const loop_scheduler*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (ctx.loop) return &ctx.loop;
+            return KickToken::internal_error("not on an h2o worker");
+        }
+    };
+
+    // The handler-parameter contract, read in the spelling the handler
+    // declared: a by-value T extracts a value through FromContext<T>; a
+    // const T& binds the extractor's underlying object through FromContextRef<T>
+    // -- zero copies, valid because the pointed-to value outlives the request.
+    // A mutable T& is refused: extraction sees the Context as const, so there
+    // is nothing mutable to bind.
     template <typename T, typename S>
-    concept Extractable = requires(const Context<S>& ctx, const Request& req) {
+    concept ExtractableValue = requires(const Context<S>& ctx, const Request& req) {
         { FromContext<T>{}(ctx, req) } -> std::same_as<std::expected<T, KickToken>>;
     };
 
+    template <typename T, typename S>
+    concept ExtractableRef = requires(const Context<S>& ctx, const Request& req) {
+        { FromContextRef<T>{}(ctx, req) } -> std::same_as<std::expected<const T*, KickToken>>;
+    };
+
+    template <typename Arg, typename S>
+    concept Extractable =
+        (!std::is_reference_v<Arg> && ExtractableValue<std::remove_cvref_t<Arg>, S>) ||
+        (std::is_reference_v<Arg> && std::is_const_v<std::remove_reference_t<Arg>>
+            && ExtractableRef<std::remove_cvref_t<Arg>, S>);
+
+namespace detail {
+        // Slot for one handler parameter: a value parameter owns its
+        // extraction; a reference parameter holds a pointer to the extracted
+        // object's home rather than a copy of it.
+        template <typename Arg>
+        using ExtractSlot = std::conditional_t<
+            std::is_reference_v<Arg>,
+            const std::remove_cvref_t<Arg>*,
+            std::optional<std::remove_cvref_t<Arg>>>;
+
+        // Turns one slot into one tuple element: a reference parameter binds
+        // the extracted object itself; a value parameter moves the extracted
+        // value out.
+        template <typename Arg, typename Slot>
+        [[nodiscard]] decltype(auto) materialize_slot(Slot& slot) {
+            if constexpr (std::is_reference_v<Arg>) {
+                return *slot;
+            } else {
+                return std::move(*slot);
+            }
+        }
+    }
+
     // Pulls every parameter a handler declares, or stops at the first
     // failure and returns it alone: a handler body never sees
-    // half-populated parameters. The slots are optionals so that a failure
+    // half-populated parameters. Value slots are optionals so that a failure
     // can leave later ones empty; they are emplaced rather than assigned
     // because RequestView is not assignable (const member).
     template <typename... Args, typename S>
@@ -235,18 +309,32 @@ namespace owl {
         // The first failure wins; the fold stops there, so "first" and
         // "only" are the same thing.
         std::optional<KickToken> failure;
-        std::tuple<std::optional<Args>...> slots;
+        std::tuple<detail::ExtractSlot<Args>...> slots;
 
-        // C++20 templated lambda avoids decltype/remove_reference_t boilerplate
-        const auto run = [&]<typename T>(std::optional<T>& slot) {
-            auto result = fromContext<T>(ctx, req);
-            if (!result) {
-                failure = std::move(result).error();
-                return false;
+        // The slot's own shape decides the route: a pointer slot is a
+        // reference parameter and binds through FromContextRef; an optional
+        // slot is a value parameter and owns its extraction.
+        const auto run = [&](auto& slot) {
+            using Slot = std::remove_cvref_t<decltype(slot)>;
+            if constexpr (std::is_pointer_v<Slot>) {
+                using T = std::remove_cv_t<std::remove_pointer_t<Slot>>;
+                auto result = fromContextRef<T>(ctx, req);
+                if (!result) {
+                    failure = std::move(result).error();
+                    return false;
+                }
+                slot = *result;
+            } else {
+                using T = typename Slot::value_type;
+                auto result = fromContext<T>(ctx, req);
+                if (!result) {
+                    failure = std::move(result).error();
+                    return false;
+                }
+                // emplace, not assign: RequestView holds a const member and so is
+                // not assignable, but constructing it in place is fine.
+                slot.emplace(*std::move(result));
             }
-            // emplace, not assign: RequestView holds a const member and so is
-            // not assignable, but constructing it in place is fine.
-            slot.emplace(*std::move(result));
             return true;
         };
 
@@ -259,8 +347,8 @@ namespace owl {
             return std::unexpected(*std::move(failure));
         }
 
-        return std::apply([](auto&... slot) {
-            return std::tuple<Args...>{*std::move(slot)...};
+        return std::apply([&](auto&... slot) {
+            return std::tuple<Args...>{detail::materialize_slot<Args>(slot)...};
         }, slots);
     }
 

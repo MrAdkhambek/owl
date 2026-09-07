@@ -18,7 +18,6 @@
 
 #include <h2o.h>
 
-#include "owl/coro/loop_scheduler.h"
 #include "owl/routing/router.h"
 #include "owl/detail.h"
 
@@ -151,10 +150,6 @@ namespace owl {
         }
 
         static void serve(detail::Worker& worker) {
-            h2o_multithread_register_receiver(worker.ctx.queue, &worker.hop, &detail::on_loop_hop);
-            loop_scheduler io{worker.ctx.loop, &worker.hop};
-            loop_scheduler::enter(io);
-
             for (;;) h2o_evloop_run(worker.ctx.loop, INT32_MAX);
             h2o_context_dispose(&worker.ctx);
         }
