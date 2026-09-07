@@ -54,9 +54,9 @@ namespace owl::util {
                                ? std::pair<std::string_view, std::string_view>{view, {}}
                                : std::pair{view.substr(0, eq_pos), view.substr(eq_pos + 1)};
                 })
-                | std::ranges::to<pool_map>(req);
+                | std::ranges::to<pool_map>();
         }
 
-        return pool_map{req};
+        return pool_map{};
     }
 }

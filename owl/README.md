@@ -29,7 +29,9 @@ owl::Response hello(owl::RequestView, owl::PathView<"name"> name) {
     return owl::Response::ok(std::format("hello {}", name.value));
 }
 
-auto router = owl::Router<>::make()
+struct App final {};
+
+auto router = owl::Router<App>::make()
               .route<"/ping">(owl::get(ping))
               .route<"/hello/{name}">(owl::get(hello));
 ```
@@ -83,7 +85,8 @@ struct Bearer {
 
 template <>
 struct owl::FromContext<Bearer> {
-    std::expected<Bearer, owl::KickToken> operator()(const owl::Context&, const owl::Request& req) const {
+        template <typename S>
+        std::expected<Bearer, owl::KickToken> operator()(const owl::Context<S>&, const owl::Request& req) const {
         const auto auth = req.header("authorization");  // header names match case-insensitively
         if (!auth || !auth->starts_with("Bearer ")) {
             return std::unexpected(owl::KickToken{"missing bearer token", 401});
@@ -96,7 +99,9 @@ owl::Response whoami(Bearer token) {
     return owl::Response::ok(std::string{token.token});
 }
 
-auto router = owl::Router<>::make()
+struct App final {};
+
+auto router = owl::Router<App>::make()
               .route<"/whoami">(owl::get(whoami));
 ```
 
@@ -118,20 +123,22 @@ auto v1 = owl::Router<AppState>::make()
 
 auto router = owl::Router<AppState>::make()
               .nest<"/api/v1">(std::move(v1))
-              .route<"/hits">(owl::get(hits))
-              .with_state(std::make_shared<AppState>());
+              .route<"/hits">(owl::get(hits));
+
+owl::Server<AppState>::builder()
+    .router(std::move(router))
+    .config({.port = 8080})
+    .build_with(std::make_shared<AppState>());
 ```
 
-`with_state` consumes the `Router<AppState>` and hands back a `Router<>`, which is the only thing `Server::Builder::router` accepts — so a router that never got its state fails to compile rather than at startup. A handler naming `State<T>` for any other `T` is rejected where it is routed.
-
-`nest` takes a router over the same state type (`std::same_as`); bind the state once, on the outermost router.
+State is bound on `Server<AppState>` via `build_with`, so a server that never got its state fails to compile rather than at startup. `Router<S>` and `Server<S>` share `S`; a handler naming `State<T>` for any other `T` is a compile error. `nest` only accepts the same `S`.
 
 ## Middleware
 
-A middleware coroutine takes `const Request&` and `Next`, optionally `State<S>`, and returns `task<Response>`. Call `next` to continue; return a response to kick. Headers apply on the way out.
+A middleware coroutine takes `const Request&` and `Next<S>`, optionally `const Context<S>&` when it needs state, and returns `task<Response>`. Call `next` to continue; return a response to kick. Headers apply on the way out.
 
 ```cpp
-coro::task<owl::Response> timing(const owl::Request& req, owl::Next next) {
+coro::task<owl::Response> timing(const owl::Request& req, owl::Next<AppState> next) {
     const auto start = std::chrono::steady_clock::now();
     owl::Response res = co_await next(req);
     res.header("x-elapsed-ms", std::to_string(
@@ -140,25 +147,29 @@ coro::task<owl::Response> timing(const owl::Request& req, owl::Next next) {
     co_return std::move(res);
 }
 
-auto router = owl::Router<>::make()
+auto router = owl::Router<AppState>::make()
               .layer(timing)
               .route<"/ping">(owl::get(ping));
 ```
 
 `Server::Builder::layer` is the outermost chain (MatchedChains slot 0). Nested `Router::layer` runs only under that prefix.
 
+## Prometheus
+
+See [`prometheus/README.md`](../prometheus/README.md). `-DOWL_ENABLE_PROMETHEUS=ON`, link `owl::prometheus`, mount the scrape handler yourself.
+
 ## Server
 
 ```cpp
-owl::Server server = owl::Server::builder()
+owl::Server<AppState> server = owl::Server<AppState>::builder()
                      .router(std::move(router))
                      .config({.port = 8080})
                      .thread(4)
-                     .build();
+                     .build_with(std::make_shared<AppState>());
 server.start();
 ```
 
-`router` must be a `Router<>`. `.thread(N)` starts N workers — Node cluster, in-process. Worker 0 runs on the calling thread; the rest are extra threads. Each worker is a single-threaded event loop with its own `SO_REUSEPORT` listener. They share the router.
+`router` is a `Router<S>`. `.thread(N)` starts N workers — Node cluster, in-process. Worker 0 runs on the calling thread; the rest are extra threads. Each worker is a single-threaded event loop with its own `SO_REUSEPORT` listener. They share the router.
 
 Do not block the loop. Offload with a pool; `co_await loop.schedule()` or `loop.post(handle)` hops back (Node's `setImmediate` from another thread). Resume is always on the **same** worker.
 
@@ -174,7 +185,7 @@ Each box below is one turn of that worker's `h2o_evloop_run`:
 
 | Directory  | Holds                                                                                       |
 |------------|---------------------------------------------------------------------------------------------|
-| `core/`    | vocabulary types with no local dependencies: `Method`, `State`, `KickToken`, pool allocator |
+| `core/`    | vocabulary types with no local dependencies: `Method`, `State`, `Context`, `KickToken`, pool allocator |
 | `util/`    | `pool_map`, string helpers                                                                  |
 | `http/`    | `Request`, `Response`, cookies, reason phrases; `detail/` for send/finish                   |
 | `extract/` | parsing, extractor types, and the `FromContext` dispatch                                    |

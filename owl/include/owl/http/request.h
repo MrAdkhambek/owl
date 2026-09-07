@@ -15,7 +15,6 @@
 #include <h2o.h>
 
 #include "owl/core/method.h"
-#include "owl/core/state.h"
 #include "owl/util/pool_map.h"
 #include "owl/util/util.h"
 
@@ -82,6 +81,17 @@ namespace owl {
             return std::nullopt;
         }
 
+        // Matched route template, not the request path. Empty on miss.
+        // Bounded (the registered pattern) so metrics can label without
+        // cardinality bombs from /users/{id}.
+        [[nodiscard]] std::string_view route_pattern() const noexcept {
+            return route_pattern_;
+        }
+
+        void set_route_pattern(const std::string_view pattern) noexcept {
+            route_pattern_ = pattern;
+        }
+
         void add_param(const std::string_view name, const std::string_view value) noexcept {
             if (param_count_ < max_path_params) params_[param_count_++] = {.name = name, .value = value};
         }
@@ -92,14 +102,6 @@ namespace owl {
 
         [[nodiscard]] std::size_t param_count() const noexcept {
             return param_count_;
-        }
-
-        void set_dispatch_state(std::shared_ptr<void> state) noexcept {
-            dispatch_state_ = std::move(state);
-        }
-
-        [[nodiscard]] Context dispatch_context() const noexcept {
-            return Context{.state = &dispatch_state_};
         }
 
         [[nodiscard]] std::stop_source stop_source() const noexcept {
@@ -130,7 +132,7 @@ namespace owl {
         std::stop_source stop_source_{};
         std::array<PathParam, max_path_params> params_{};
         std::size_t param_count_{0};
-        std::shared_ptr<void> dispatch_state_{};
+        std::string_view route_pattern_{};
     };
 }
 

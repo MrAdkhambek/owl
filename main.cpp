@@ -65,7 +65,7 @@ namespace {
         co_return owl::Response::stream(blob(), "application/octet-stream");
     }
 
-    coro::task<owl::Response> timing(const owl::Request& req, const owl::Next next) {
+    coro::task<owl::Response> timing(const owl::Request& req, owl::Next<AppState> next) {
         const auto start = std::chrono::steady_clock::now();
         owl::Response res = co_await next(req);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -90,14 +90,13 @@ int main() {
                   .route<"/calc/{number}">(owl::get(calc))
                   .route<"/hits">(owl::get(hits))
                   .route<"/sse">(owl::get(sse))
-                  .route<"/stream">(owl::get(download))
-                  .with_state(state);
+                  .route<"/stream">(owl::get(download));
 
-    const owl::Server server = owl::Server::builder()
-                               .router(std::move(router))
-                               .config({.port = 8080})
-                               .thread(4)
-                               .build();
+    const owl::Server<AppState> server = owl::Server<AppState>::builder()
+                                         .router(std::move(router))
+                                         .config({.port = 8080})
+                                         .thread(4)
+                                         .build_with(state);
 
     std::printf(
         "listening on http://127.0.0.1:%u\n  GET /ping\n  GET /hello/{name}\n  GET /calc/{number}\n  GET /hits\n  GET /sse\n  GET /stream\n  GET /api/v1/ping\n  GET /api/v1/hits\n",

@@ -14,6 +14,21 @@
 #include "owl/http/policy.h"
 
 namespace owl::detail {
+    [[nodiscard]] static std::string frame_sse(const std::string_view payload) {
+        if (payload.empty()) return "data: \n\n";
+
+        const auto n_lines = 1 + static_cast<std::size_t>(std::ranges::count(payload, '\n'));
+
+        std::string framed;
+        framed.reserve(payload.size() + n_lines * 6 + 1); // "data: " per line + final '\n'
+
+        for (auto&& part : payload | std::views::split('\n')) {
+            std::format_to(std::back_inserter(framed), "data: {}\n", std::string_view(part));
+        }
+        framed.push_back('\n');
+        return framed;
+    }
+
     struct stream_channel final {
     private:
         static void on_proceed(h2o_generator_t* const self, h2o_req_t*) noexcept {
@@ -71,6 +86,11 @@ namespace owl::detail {
             return !halted();
         }
     };
+
+    [[nodiscard]] inline h2o_iovec_t dup(h2o_mem_pool_t* pool, const std::string_view text) {
+        if (text.empty()) return h2o_iovec_init("", 0);
+        return h2o_strdup(pool, text.data(), text.size());
+    }
 
     inline void write_status(h2o_req_t* const req, const int status) noexcept {
         req->res.status = status;

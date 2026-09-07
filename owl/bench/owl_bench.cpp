@@ -7,6 +7,8 @@
 #include <owl/server.h>
 
 namespace {
+    struct BenchState final {};
+
     owl::Response plaintext(owl::RequestView) {
         return owl::Response::ok("Hello, World!");
     }
@@ -20,13 +22,13 @@ int main(int argc, char** argv) {
     const auto port = static_cast<std::uint16_t>(argc > 1 ? std::atoi(argv[1]) : 8080);
     const auto threads = static_cast<unsigned>(argc > 2 ? std::atoi(argv[2]) : 1);
     try {
-        auto router = owl::Router<>::make()
+        auto router = owl::Router<BenchState>::make()
             .route<"/plaintext">(owl::get(plaintext))
             .route<"/json">(owl::get(json));
-        owl::Server server = owl::Server::builder()
+        owl::Server<BenchState> server = owl::Server<BenchState>::builder()
             .router(std::move(router))
             .config({.address = "127.0.0.1", .port = port, .threads = threads})
-            .build();
+            .build_with(std::make_shared<BenchState>());
         std::printf("owl listening on http://127.0.0.1:%u (/plaintext, /json)\n", server.port());
         std::fflush(stdout);
         server.start();

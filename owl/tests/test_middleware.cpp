@@ -72,7 +72,11 @@ namespace {
         return owl::Response::ok("ok");
     }
 
-    coro::task<owl::Response> timing(const owl::Request& req, owl::Next next) {
+    struct App final {
+        int n = 7;
+    };
+
+    coro::task<owl::Response> timing(const owl::Request& req, owl::Next<App> next) {
         const auto start = std::chrono::steady_clock::now();
         owl::Response res = co_await next(req);
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -81,34 +85,32 @@ namespace {
         co_return std::move(res);
     }
 
-    coro::task<owl::Response> kick(const owl::Request&, owl::Next) {
+    coro::task<owl::Response> kick(const owl::Request&, owl::Next<App>) {
         co_return owl::Response::ok("unauthorized", 401);
     }
 
-    struct App {
-        int n = 7;
-    };
-
-    coro::task<owl::Response> with_state(const owl::Request& req, owl::State<App> app, owl::Next next) {
+    coro::task<owl::Response> with_state(const owl::Request& req, const owl::Context<App>& ctx, owl::Next<App> next) {
         auto res = co_await next(req);
-        res.header("x-n", std::to_string(app->n));
+        res.header("x-n", std::to_string(ctx.state->n));
         co_return std::move(res);
     }
 
-    owl::Response run_chain(owl::Router<>& router, Fixture& fixture, const std::string_view path,
-                            const owl::MiddlewareChain* const server = nullptr) {
-        owl::detail::MatchedChains chains{};
+    template <typename S>
+    owl::Response run_chain(owl::Router<S>& router, Fixture& fixture, const std::string_view path,
+                            const owl::Context<S>& ctx = {},
+                            const owl::MiddlewareChain<S>* const server = nullptr) {
+        owl::detail::MatchedChains<S> chains{};
         const auto* const handler = router.match(owl::Method::Get, path, *fixture.request, &chains);
         EXPECT_NE(handler, nullptr);
-        owl::Terminal term{handler};
+        owl::Terminal<S> term{handler};
         const auto span = chains.splice(server);
-        const owl::Next next{span.data, span.count, &term};
+        const owl::Next<S> next{span.data, span.count, &term, &ctx};
         return coro::sync_wait(next(*fixture.request));
     }
 }
 
 TEST(Middleware, HandlerRunsWithNoLayers) {
-    auto router = owl::Router<>::make().route<"/ping">(owl::get(ping));
+    auto router = owl::Router<App>::make().route<"/ping">(owl::get(ping));
     Fixture fixture;
     fixture.send(run_chain(router, fixture, "/ping"));
     EXPECT_EQ(fixture.capture.body, "pong");
@@ -116,7 +118,7 @@ TEST(Middleware, HandlerRunsWithNoLayers) {
 }
 
 TEST(Middleware, TimingAddsElapsedHeader) {
-    auto router = owl::Router<>::make()
+    auto router = owl::Router<App>::make()
                       .layer(timing)
                       .route<"/ping">(owl::get(ping));
     Fixture fixture;
@@ -127,7 +129,7 @@ TEST(Middleware, TimingAddsElapsedHeader) {
 
 TEST(Middleware, KickSkipsTheHandler) {
     handler_calls = 0;
-    auto router = owl::Router<>::make()
+    auto router = owl::Router<App>::make()
                       .layer(kick)
                       .route<"/ping">(owl::get(counted));
     Fixture fixture;
@@ -140,17 +142,17 @@ TEST(Middleware, KickSkipsTheHandler) {
 TEST(Middleware, InjectsRouterState) {
     auto router = owl::Router<App>::make()
                       .layer(with_state)
-                      .route<"/ping">(owl::get(ping))
-                      .with_state(std::make_shared<App>(App{.n = 9}));
+                      .route<"/ping">(owl::get(ping));
     Fixture fixture;
-    fixture.send(run_chain(router, fixture, "/ping"));
+    const owl::Context<App> ctx{std::make_shared<App>(App{.n = 9})};
+    fixture.send(run_chain(router, fixture, "/ping", ctx));
     EXPECT_EQ(fixture.header("x-n"), "9");
 }
 
 TEST(Middleware, NestedLayerRunsOnlyUnderPrefix) {
     std::vector<std::string> order;
     const auto tag = [&order](std::string name) {
-        return [name = std::move(name), &order](const owl::Request& req, owl::Next next) -> coro::task<owl::Response> {
+        return [name = std::move(name), &order](const owl::Request& req, auto next) -> coro::task<owl::Response> {
             order.push_back(name + "-in");
             auto res = co_await next(req);
             order.push_back(name + "-out");
@@ -158,10 +160,10 @@ TEST(Middleware, NestedLayerRunsOnlyUnderPrefix) {
         };
     };
 
-    auto inner = owl::Router<>::make()
+    auto inner = owl::Router<App>::make()
                      .layer(tag("inner"))
                      .route<"/ping">(owl::get(ping));
-    auto router = owl::Router<>::make()
+    auto router = owl::Router<App>::make()
                       .layer(tag("outer"))
                       .nest<"/api">(std::move(inner))
                       .route<"/ping">(owl::get(ping));
@@ -179,19 +181,19 @@ TEST(Middleware, NestedLayerRunsOnlyUnderPrefix) {
 TEST(Middleware, ServerChainRunsBeforeRouter) {
     std::vector<std::string> order;
     const auto tag = [&order](std::string name) {
-        return [name = std::move(name), &order](const owl::Request& req, owl::Next next) -> coro::task<owl::Response> {
+        return [name = std::move(name), &order](const owl::Request& req, auto next) -> coro::task<owl::Response> {
             order.push_back(name);
             co_return co_await next(req);
         };
     };
 
-    auto router = owl::Router<>::make()
+    auto router = owl::Router<App>::make()
                       .layer(tag("router"))
                       .route<"/ping">(owl::get(ping));
-    owl::MiddlewareChain server;
-    server.emplace_back(owl::wrap_layer<void>(tag("server")));
+    owl::MiddlewareChain<App> server;
+    server.emplace_back(owl::wrap_layer<App>(tag("server")));
 
     Fixture fixture;
-    fixture.send(run_chain(router, fixture, "/ping", &server));
+    fixture.send(run_chain(router, fixture, "/ping", {}, &server));
     EXPECT_EQ(order, (std::vector<std::string>{"server", "router"}));
 }

@@ -43,4 +43,15 @@ if (NOT TARGET owl::owl)
             INTERFACE_COMPILE_FEATURES cxx_std_23
             INTERFACE_COMPILE_DEFINITIONS H2O_USE_LIBUV=0
             INTERFACE_LINK_LIBRARIES "owl::coro;owl::fstr;PkgConfig::H2O;nlohmann_json::nlohmann_json;OpenSSL::SSL;OpenSSL::Crypto;ZLIB::ZLIB")
+    endif ()
+
+if (@OWL_ENABLE_PROMETHEUS@)
+    if (NOT TARGET owl::prometheus)
+        add_library(owl::prometheus INTERFACE IMPORTED)
+        set_target_properties(owl::prometheus PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+                INTERFACE_COMPILE_FEATURES cxx_std_23
+                INTERFACE_COMPILE_DEFINITIONS H2O_USE_LIBUV=0
+                INTERFACE_LINK_LIBRARIES "owl::owl")
+    endif ()
 endif ()

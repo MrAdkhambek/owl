@@ -5,7 +5,7 @@
 // on the way out. Factories name the usual shapes; a free constructor
 // would leave Content-Type unset.
 
-#include <cstddef>
+#include <concepts>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <h2o.h>
+#include <nlohmann/json.hpp>
 
 #include <coro/async_generator.h>
 #include <coro/task.h>
@@ -27,21 +28,6 @@ namespace owl {
     using StreamBody = coro::async_generator<std::string>;
     using Body = std::variant<std::monostate, std::string, StreamBody>;
 
-    namespace detail {
-        [[nodiscard]] inline std::string frame_sse(const std::string_view payload) {
-            const auto n_lines = 1 + static_cast<std::size_t>(std::ranges::count(payload, '\n'));
-
-            std::string framed;
-            framed.reserve(payload.size() + n_lines * 6 + 1); // "data: " per line + final '\n'
-
-            for (auto&& part : payload | std::views::split('\n')) {
-                std::format_to(std::back_inserter(framed), "data: {}\n", std::string_view(part));
-            }
-            framed.push_back('\n');
-            return framed;
-        }
-    }
-
     class Response final {
     public:
         [[nodiscard]] static Response ok(const std::string_view text, const int status = 200) {
@@ -50,10 +36,17 @@ namespace owl {
             return response;
         }
 
-        [[nodiscard]] static Response json(const nlohmann::json& json, const int status = 200) {
-            Response response{status, json.dump()};
+        // string_view wins over nlohmann::json for const char*, so
+        // json("{\"a\":1}") is raw JSON, not a dumped JSON string.
+        [[nodiscard]] static Response json(const std::string_view body, const int status = 200) {
+            Response response{status, std::string{body}};
             response.set_token_header(H2O_TOKEN_CONTENT_TYPE, "application/json");
             return response;
+        }
+
+        template <typename T> requires (!std::convertible_to<T, std::string_view>)
+        [[nodiscard]] static Response json(const T& value, const int status = 200) {
+            return json(std::string_view{nlohmann::json(value).dump()}, status);
         }
 
         [[nodiscard]] static Response body(
@@ -91,12 +84,7 @@ namespace owl {
         }
 
         [[nodiscard]] static Response sse(StreamBody body, const int status = 200) {
-            Response response{
-                status,
-                std::move(body) | coro::fmap([](const std::string& chunk) {
-                    return owl::detail::frame_sse(chunk);
-                }),
-            };
+            Response response{status, std::move(body) | coro::fmap(detail::frame_sse)};
             response.add_header("cache-control", "no-cache");
             response.set_token_header(H2O_TOKEN_CONTENT_TYPE, "text/event-stream");
             return response;
@@ -143,11 +131,6 @@ namespace owl {
               body_(std::move(body)) {
         }
 
-        [[nodiscard]] h2o_iovec_t dup(h2o_mem_pool_t* pool, const std::string_view text) const {
-            if (text.empty()) return h2o_iovec_init("", 0);
-            return h2o_strdup(pool, text.data(), text.size());
-        }
-
         void add_token_header(const h2o_token_t* const token, const std::string_view value) {
             if (token == H2O_TOKEN_SET_COOKIE) {
                 cookies_.emplace_back(value);
@@ -166,24 +149,28 @@ namespace owl {
 
         void flush_headers(h2o_req_t* req) {
             for (const auto& [name, value] : headers_) {
-                const auto lowered = dup(&req->pool, name);
+                const auto lowered = detail::dup(&req->pool, name);
                 h2o_strtolower(lowered.base, lowered.len);
-                const auto original = dup(&req->pool, name);
-                const auto copy = dup(&req->pool, value);
-                h2o_add_header_by_str(&req->pool, &req->res.headers, lowered.base, lowered.len, 1,
-                                      original.base, copy.base, copy.len);
+                const auto original = detail::dup(&req->pool, name);
+                const auto copy = detail::dup(&req->pool, value);
+                h2o_add_header_by_str(
+                    &req->pool, &req->res.headers,
+                    lowered.base, lowered.len,
+                    1, original.base,
+                    copy.base, copy.len
+                );
             }
             for (const auto& cookie : cookies_) {
-                const auto copy = dup(&req->pool, cookie);
+                const auto copy = detail::dup(&req->pool, cookie);
                 h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_SET_COOKIE, nullptr, copy.base, copy.len);
             }
         }
 
+        Body body_{};
         const int status_{200};
         const bool has_body_{false};
 
         std::vector<std::string> cookies_{};
         std::unordered_map<std::string, std::string> headers_;
-        Body body_{};
     };
 }

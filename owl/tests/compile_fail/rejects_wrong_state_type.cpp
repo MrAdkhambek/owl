@@ -1,6 +1,5 @@
-// FromContext<State<T>> casts the erased state pointer without checking it, so
-// a handler naming a state type the router does not carry must be rejected at
-// the point it is routed rather than reinterpreted per request.
+// A handler naming State<T> only belongs on Router<T>. route() rejects a
+// mismatch at the point the handler is mounted rather than at extract time.
 #include <owl/routing/router.h>
 
 namespace {

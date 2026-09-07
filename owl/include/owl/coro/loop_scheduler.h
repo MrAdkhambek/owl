@@ -169,7 +169,8 @@ namespace owl {
     // of the h2o and coro dependencies this one drags in.
     template <>
     struct FromContext<loop_scheduler> {
-        std::expected<loop_scheduler, KickToken> operator()(const Context&, const Request&) const {
+        template <typename S>
+        std::expected<loop_scheduler, KickToken> operator()(const Context<S>&, const Request&) const {
             if (const auto* const io = loop_scheduler::current(); io != nullptr) return *io;
             return KickToken::internal_error("not on an h2o worker");
         }

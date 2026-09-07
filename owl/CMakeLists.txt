@@ -13,8 +13,8 @@ target_sources(owl INTERFACE
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"
         FILES
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/owl.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/detail.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/server.h"
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/alloc.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/method.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/state.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/token.h"
@@ -27,6 +27,11 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/http/policy.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/http/request.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/http/response.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/detail/endpoint.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/detail/layer.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/detail/pattern.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/detail/traits.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/detail/trie.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/middleware.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/router.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/pool_map.h"
@@ -99,6 +104,7 @@ if (BUILD_TESTING)
     owl_add_test(test_router)
     owl_add_test(test_middleware)
     owl_add_test(test_loop_scheduler)
+    owl_add_test(test_builder)
 
     function(owl_add_compile_fail_test name)
         add_executable(${name} EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/${name}.cpp")
@@ -109,6 +115,7 @@ if (BUILD_TESTING)
         set_tests_properties(${name} PROPERTIES WILL_FAIL TRUE)
     endfunction()
 
+    owl_add_compile_fail_test(rejects_discarded_builder)
     owl_add_compile_fail_test(rejects_router_without_state)
     owl_add_compile_fail_test(rejects_wrong_state_type)
     owl_add_compile_fail_test(rejects_nest_of_other_state)

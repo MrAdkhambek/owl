@@ -21,18 +21,20 @@ arguments. Nothing here is production-ready.
 ```cpp
 #include <owl/owl.h>
 
+struct App final {};
+
 owl::Response ping(owl::RequestView) {
     return owl::Response::ok("pong");
 }
 
 int main() {
-    auto router = owl::Router<>::make()
+    auto router = owl::Router<App>::make()
                   .route<"/ping">(owl::get(ping));
 
-    owl::Server::builder()
+    owl::Server<App>::builder()
         .router(std::move(router))
         .config({.port = 8080})
-        .build()
+        .build_with(std::make_shared<App>())
         .start();
 }
 ```
@@ -44,8 +46,9 @@ int main() {
 | [**owl**](owl/README.md) | `owl::owl` | `<owl/owl.h>` | Typed routes on libh2o; coroutine handlers stay on the event loop |
 | [**coro**](coro/README.md) | `owl::coro` | `<coro/coro.h>` | Lazy tasks, generators, schedulers, an I/O reactor |
 | [**fstr**](fstr/README.md) | `owl::fstr` | `<fstr/fstr.h>` | String literals as structural NTTPs |
+| [**prometheus**](prometheus/README.md) | `owl::prometheus` | `<prometheus/prometheus.h>` | HTTP RED + scrape handler; `-DOWL_ENABLE_PROMETHEUS=ON` |
 
-`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone.
+`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` pulls `owl::owl` and is off by default.
 
 Each library lives in `include/<name>/` so the prefix is part of the include. Public headers are `#pragma once`.
 
@@ -69,11 +72,15 @@ auto v1 = owl::Router<App>::make()
 
 auto router = owl::Router<App>::make()
               .nest<"/api/v1">(std::move(v1))
-              .route<"/hello/{name}">(owl::get(hello))
-              .with_state(std::make_shared<App>());
+              .route<"/hello/{name}">(owl::get(hello));
+
+owl::Server<App>::builder()
+    .router(std::move(router))
+    .config({.port = 8080})
+    .build_with(std::make_shared<App>());
 ```
 
-`with_state` consumes `Router<App>` and returns `Router<>` — the only type `Server` accepts. Nesting requires the same state type; bind state once, on the outermost router.
+State is bound on `Server<App>` via `build_with`. `Router<App>` and `Server<App>` share the state type, `nest` only takes the same `S`, and a handler naming `State<T>` for another `T` is a compile error, not a runtime 500.
 
 The demo binary is `owl_demo` from `main.cpp`.
 
@@ -89,6 +96,7 @@ add_subdirectory(path/to/owl)
 target_link_libraries(app PRIVATE owl::owl)     # web: pulls coro, fstr, h2o
 # target_link_libraries(app PRIVATE owl::coro)  # tasks only
 # target_link_libraries(app PRIVATE owl::fstr)  # NTTPs only
+# target_link_libraries(app PRIVATE owl::prometheus)  # needs -DOWL_ENABLE_PROMETHEUS=ON
 ```
 
 ### `make install`
@@ -100,7 +108,7 @@ cmake --install build          # Makefile generators: make -C build install
 # cmake --install build --prefix ~/.local
 ```
 
-Headers land in `<prefix>/include/{owl,coro,fstr}/`. Then:
+Headers land in `<prefix>/include/{owl,coro,fstr}/` (and `prometheus/` if enabled). Then:
 
 ```cmake
 find_package(owl REQUIRED)
@@ -110,7 +118,7 @@ target_link_libraries(app PRIVATE owl::owl)
 A custom prefix needs `CMAKE_PREFIX_PATH`.
 
 ```cpp
-#include <owl/owl.h>     // or <coro/coro.h> / <fstr/fstr.h>
+#include <owl/owl.h>     // or <coro/coro.h> / <fstr/fstr.h> / <prometheus/prometheus.h>
 ```
 
 `owl::owl` needs these on the machine (found via CMake / pkg-config):

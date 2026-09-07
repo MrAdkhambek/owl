@@ -9,8 +9,6 @@
 #include <unordered_map>
 #include <utility>
 
-#include "owl/core/alloc.h"
-
 namespace owl {
     [[nodiscard]] constexpr char ascii_to_lower(const char c) noexcept {
         return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
@@ -32,18 +30,8 @@ namespace owl {
         }
     };
 
-    class pool_map final : public std::unordered_map<
-            std::string_view,
-            std::string_view,
-            std::hash<std::string_view>,
-            std::equal_to<>,
-            RequestAllocator<std::pair<const std::string_view, std::string_view>>> {
-        using base = std::unordered_map<
-            std::string_view,
-            std::string_view,
-            std::hash<std::string_view>,
-            std::equal_to<>,
-            RequestAllocator<std::pair<const std::string_view, std::string_view>>>;
+    class pool_map final : public std::unordered_map<std::string_view, std::string_view> {
+        using base = std::unordered_map<std::string_view, std::string_view>;
 
     public:
         using base::at;
@@ -51,19 +39,10 @@ namespace owl {
         using base::end;
         using base::find;
 
-        explicit pool_map(h2o_req_t* const req) : base(allocator_type{req}) {
-        }
-
-        explicit pool_map(const allocator_type& alloc) : base(alloc) {
-        }
+        pool_map() = default;
 
         template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, value_type>
-        pool_map(std::from_range_t, R&& r, h2o_req_t* const req) : pool_map(std::from_range, std::forward<R>(r), allocator_type{req}) {
-        }
-
-        template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, value_type>
-        pool_map(std::from_range_t, R&& r, const allocator_type& alloc) : base(alloc) {
-            this->insert_range(std::forward<R>(r));
+        pool_map(std::from_range_t, R&& r) : base(std::from_range, std::forward<R>(r)) {
         }
 
         [[nodiscard]] const std::string_view* find_value(const std::string_view key) const noexcept {

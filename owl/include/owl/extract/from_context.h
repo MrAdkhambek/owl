@@ -83,7 +83,8 @@ namespace owl {
     // map; the specialization exists so BodyView is extractable at all.
     template <>
     struct FromContext<BodyView> {
-        std::expected<BodyView, KickToken> operator()(const Context&, const Request& req) const noexcept {
+        template <typename S>
+        std::expected<BodyView, KickToken> operator()(const Context<S>&, const Request& req) const noexcept {
             return BodyView::extract(req);
         }
     };
@@ -96,7 +97,8 @@ namespace owl {
     struct FromContext<Header<Pattern, T>> {
         using TargetType = Header<Pattern, T>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift_parsed<TargetType>(req.header(TargetType::name), &KickToken::bad_request, "header");
         }
     };
@@ -106,7 +108,8 @@ namespace owl {
     struct FromContext<HeaderView<Pattern>> {
         using TargetType = HeaderView<Pattern>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift(TargetType::extract(req), &KickToken::bad_request, "header");
         }
     };
@@ -119,7 +122,8 @@ namespace owl {
     // the no-JSON path never pays for unwinding.
     template <typename T>
     struct FromContext<Json<T>> {
-        std::expected<Json<T>, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<Json<T>, KickToken> operator()(const Context<S>&, const Request& req) const {
             const auto content_type = req.header("content-type");
             if (!content_type || !util::is_json_content_type(*content_type)) {
                 return KickToken::unsupported_media_type("expected a JSON body");
@@ -147,7 +151,8 @@ namespace owl {
     struct FromContext<Path<Pattern, T>> {
         using TargetType = Path<Pattern, T>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift_parsed<TargetType>(req.param(TargetType::name), &KickToken::not_found, "path parameter");
         }
     };
@@ -157,7 +162,8 @@ namespace owl {
     struct FromContext<PathView<Pattern>> {
         using TargetType = PathView<Pattern>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift(TargetType::extract(req), &KickToken::not_found, "path parameter");
         }
     };
@@ -168,7 +174,8 @@ namespace owl {
     struct FromContext<Query<Pattern, T>> {
         using TargetType = Query<Pattern, T>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift_parsed<TargetType>(req.query(TargetType::name), &KickToken::bad_request, "query parameter");
         }
     };
@@ -178,7 +185,8 @@ namespace owl {
     struct FromContext<QueryView<Pattern>> {
         using TargetType = QueryView<Pattern>;
 
-        std::expected<TargetType, KickToken> operator()(const Context&, const Request& req) const {
+        template <typename S>
+        std::expected<TargetType, KickToken> operator()(const Context<S>&, const Request& req) const {
             return detail::lift(TargetType::extract(req), &KickToken::bad_request, "query parameter");
         }
     };
@@ -187,7 +195,8 @@ namespace owl {
     // extraction.
     template <>
     struct FromContext<RequestView> {
-        std::expected<RequestView, KickToken> operator()(const Context&, const Request& req) const noexcept {
+        template <typename S>
+        std::expected<RequestView, KickToken> operator()(const Context<S>&, const Request& req) const noexcept {
             return RequestView::extract(req);
         }
     };
@@ -197,8 +206,11 @@ namespace owl {
     // is why it kicks 500 rather than anything 4xx.
     template <typename T>
     struct FromContext<State<T>> {
-        std::expected<State<T>, KickToken> operator()(const Context& ctx, const Request&) const {
-            if (ctx.state != nullptr && *ctx.state) return State<T>{std::static_pointer_cast<T>(*ctx.state)};
+        template <typename S>
+        std::expected<State<T>, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if constexpr (std::is_same_v<S, T>) {
+                if (ctx.state) return State<T>{ctx.state};
+            }
             return KickToken::internal_error("no state attached to this router");
         }
     };
@@ -206,8 +218,8 @@ namespace owl {
     // The handler-parameter contract: FromContext must answer
     // expected<T, KickToken>. Satisfying it -- one specialization -- is the
     // whole registration step for a new parameter type.
-    template <typename T>
-    concept Extractable = requires(const Context& ctx, const Request& req) {
+    template <typename T, typename S>
+    concept Extractable = requires(const Context<S>& ctx, const Request& req) {
         { FromContext<T>{}(ctx, req) } -> std::same_as<std::expected<T, KickToken>>;
     };
 
@@ -216,9 +228,10 @@ namespace owl {
     // half-populated parameters. The slots are optionals so that a failure
     // can leave later ones empty; they are emplaced rather than assigned
     // because RequestView is not assignable (const member).
-    template <Extractable... Args>
+    template <typename... Args, typename S>
+        requires ((Extractable<Args, S> && ...))
     [[nodiscard]] std::expected<std::tuple<Args...>, KickToken>
-    extract_all(const Context& ctx, const Request& req) {
+    extract_all(const Context<S>& ctx, const Request& req) {
         // The first failure wins; the fold stops there, so "first" and
         // "only" are the same thing.
         std::optional<KickToken> failure;

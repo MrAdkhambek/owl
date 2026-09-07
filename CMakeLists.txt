@@ -9,6 +9,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 include(GNUInstallDirs)
 include(CTest)
 
+option(OWL_ENABLE_PROMETHEUS "Build owl::prometheus (HTTP RED + scrape handler)" OFF)
+
 add_executable(${PROJECT_NAME}_demo main.cpp)
 
 if (BUILD_TESTING)
@@ -26,13 +28,20 @@ endif ()
 add_subdirectory(coro)
 add_subdirectory(fstr)
 add_subdirectory(owl)
+if (OWL_ENABLE_PROMETHEUS)
+    add_subdirectory(prometheus)
+endif ()
 
 target_link_libraries(${PROJECT_NAME}_demo PRIVATE
         ${PROJECT_NAME}::coro
         ${PROJECT_NAME}::fstr
         ${PROJECT_NAME}::owl)
 
-install(TARGETS coro fstr owl FILE_SET HEADERS)
+if (OWL_ENABLE_PROMETHEUS)
+    install(TARGETS coro fstr owl prometheus FILE_SET HEADERS)
+else ()
+    install(TARGETS coro fstr owl FILE_SET HEADERS)
+endif ()
 
 include(CMakePackageConfigHelpers)
 configure_package_config_file(
