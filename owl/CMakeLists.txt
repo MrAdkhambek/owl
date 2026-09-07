@@ -61,6 +61,13 @@ FetchContent_MakeAvailable(nlohmann_json)
 
 target_compile_definitions(owl INTERFACE H2O_USE_LIBUV=0)
 
+if (OWL_ENABLE_PROMETHEUS)
+    # Prometheus itself depends on nothing; owl optionally depends on it so
+    # dispatch can record HTTP RED under the OWL_ENABLE_PROMETHEUS macro.
+    target_link_libraries(owl INTERFACE prometheus)
+    target_compile_definitions(owl INTERFACE OWL_ENABLE_PROMETHEUS)
+endif ()
+
 target_link_libraries(owl INTERFACE
         PkgConfig::H2O
         coro
@@ -105,6 +112,10 @@ if (BUILD_TESTING)
     owl_add_test(test_middleware)
     owl_add_test(test_loop_scheduler)
     owl_add_test(test_builder)
+
+    if (OWL_ENABLE_PROMETHEUS)
+        owl_add_test(test_prometheus_dispatch)
+    endif ()
 
     function(owl_add_compile_fail_test name)
         add_executable(${name} EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/${name}.cpp")

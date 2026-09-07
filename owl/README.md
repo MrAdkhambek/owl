@@ -156,7 +156,7 @@ auto router = owl::Router<AppState>::make()
 
 ## Prometheus
 
-See [`prometheus/README.md`](../prometheus/README.md). `-DOWL_ENABLE_PROMETHEUS=ON`, link `owl::prometheus`, mount the scrape handler yourself.
+See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_PROMETHEUS=ON`: `owl::owl` then depends on `owl::prometheus` (which itself pulls nothing), and the server records HTTP RED itself — every exchange through dispatch under its route pattern, thrown handlers as `500`, and unmatched requests (`404`/`405`, dispatch failures) counted without a duration. Your handler only serves `owl::prometheus::dump()` as `text/plain; version=0.0.4; charset=utf-8`.
 
 ## Server
 

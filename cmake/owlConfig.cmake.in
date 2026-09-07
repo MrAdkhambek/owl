@@ -46,12 +46,18 @@ if (NOT TARGET owl::owl)
     endif ()
 
 if (@OWL_ENABLE_PROMETHEUS@)
+    # Installed owl::owl carries the same optional dependency the build-tree
+    # target has: dispatch records HTTP RED under OWL_ENABLE_PROMETHEUS.
+    set_property(TARGET owl::owl APPEND PROPERTY
+            INTERFACE_COMPILE_DEFINITIONS OWL_ENABLE_PROMETHEUS)
+    set_property(TARGET owl::owl APPEND PROPERTY
+            INTERFACE_LINK_LIBRARIES owl::prometheus)
+
     if (NOT TARGET owl::prometheus)
         add_library(owl::prometheus INTERFACE IMPORTED)
         set_target_properties(owl::prometheus PROPERTIES
                 INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
                 INTERFACE_COMPILE_FEATURES cxx_std_23
-                INTERFACE_COMPILE_DEFINITIONS H2O_USE_LIBUV=0
-                INTERFACE_LINK_LIBRARIES "owl::owl")
+                INTERFACE_LINK_LIBRARIES "")
     endif ()
 endif ()

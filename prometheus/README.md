@@ -2,16 +2,16 @@
 
 # prometheus
 
-**Header-only Prometheus metrics for owl**
+**Header-only Prometheus metrics for C++23**
 
-First-party counters, gauges, histograms, HTTP RED, and a scrape handler
-you mount yourself.
+First-party counters, gauges, histograms, HTTP RED, and Prometheus
+text-exposition dumps. Standalone — it depends on no web framework.
 
 [![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/23)
 [![CMake](https://img.shields.io/badge/target-owl::prometheus-064F8C?logo=cmake&logoColor=white)](#enable)
 [![header-only](https://img.shields.io/badge/header--only-yes-success)](#)
 
-[Enable](#enable) · [Scrape](#scrape) · [App metrics](#app-metrics) · [HTTP RED](#http-red) · [Layout](#layout)
+[Enable](#enable) · [App metrics](#app-metrics) · [HTTP RED](#http-red) · [Layout](#layout)
 
 </div>
 
@@ -21,44 +21,27 @@ you mount yourself.
 ```cpp
 #include <prometheus/prometheus.h>
 
-struct App final {};
-
-const auto prometheus = owl::prometheus::make();
-
-auto admin = owl::Router<App>::make()
-             .layer(basic_auth)
-             .route<"/metrics">(owl::get(prometheus.handler));
+owl::prometheus::counter("jobs_total").inc();
+owl::prometheus::record_request("GET", "/ping", 200, 0.0142);
+std::string body = owl::prometheus::dump();
 ```
 
-Link `owl::prometheus` (pulls `owl::owl`). There is no automatic `/metrics`.
-Auth is your middleware. The path is yours.
+Link `owl::prometheus`. Despite the target name it pulls nothing — no owl,
+no libh2o — and knows nothing about `Request` or `Response`. `dump()` emits
+Prometheus text 0.0.4 (`text/plain; version=0.0.4; charset=utf-8`).
 
 ## Enable
 
-Off unless the superproject is configured with the option **and** the app
-links the target:
+Off unless the superproject is configured with the option:
 
 ```cmake
 cmake -S . -B build -DOWL_ENABLE_PROMETHEUS=ON
-target_link_libraries(app PRIVATE owl::prometheus)
 ```
 
-Include `<prometheus/prometheus.h>`. Mount RED yourself with
-`.layer(owl::prometheus::http)`. `<owl/owl.h>` never pulls metrics.
-
-## Scrape
-
-`owl::prometheus::make()` returns a function pointer so `owl::get` can take
-it. Lambdas cannot be route handlers.
-
-```cpp
-const auto prometheus = owl::prometheus::make();
-router.route<"/metrics">(owl::get(prometheus.handler));
-```
-
-The handler dumps Prometheus text 0.0.4
-(`Content-Type: text/plain; version=0.0.4; charset=utf-8`). Wrap the route
-with whatever you already use for auth. Default listen is `127.0.0.1`.
+With the option ON, `owl::owl` depends on `owl::prometheus` and dispatch
+records HTTP RED itself — you only serve `dump()`. Link
+`owl::prometheus` directly when you use it without owl; then you record
+yourself (see [HTTP RED](#http-red)). `<owl/owl.h>` never pulls metrics.
 
 ## App metrics
 
@@ -82,24 +65,38 @@ path is not.
 
 ## HTTP RED
 
-Mount `.layer(owl::prometheus::http)` on the server (or a router). It records:
+When owl is built with the option ON, its dispatch calls these for you:
+matched exchanges (including middleware kicks) through `record_request` with
+the registered route pattern, thrown handlers as `500`, and `404`/`405` or
+dispatch failures through `record_unmatched`. Without owl, call them from
+wherever you see a finished exchange (middleware, a dispatch hook, a proxy):
+
+```cpp
+owl::prometheus::record_request(method, route_pattern, status, elapsed_seconds);
+```
+
+It records:
 
 | Metric | Labels |
 |---|---|
 | `http_requests_total` | `method`, `status`, `route` |
 | `http_request_duration_seconds` | `method`, `status`, `route` |
-| `http_requests_in_flight` | none |
 
-`route` is the registered pattern (`/hello/{name}`), not the request path.
-404/405 never enter middleware. Call `record_unmatched` yourself if you want
-them counted — do **not** observe duration (a zero sample would pull
-percentiles down). A handler that throws is counted as `500` with elapsed
-time, then rethrown.
+`route` should be the registered pattern (`/hello/{name}`), not the request
+path. For requests that never reach that layer (404/405, or a kick before
+the router), call:
+
+```cpp
+owl::prometheus::record_unmatched(method, pattern, status);
+```
+
+It counts only and creates no duration series — there is no honest elapsed
+to report, and a fabricated zero sample would pull percentiles down.
 
 ## Layout
 
 | Header | Role |
 |---|---|
-| `prometheus/prometheus.h` | `make()`, scrape `handler` |
-| `prometheus/registry.h` | counter / gauge / histogram, dump |
-| `prometheus/http.h` | RED middleware, unmatched |
+| `prometheus/prometheus.h` | umbrella |
+| `prometheus/registry.h` | counter / gauge / histogram, clear |
+| `prometheus/http.h` | `record_request`, `record_unmatched`, `dump` |

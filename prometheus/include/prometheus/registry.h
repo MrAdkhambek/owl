@@ -464,10 +464,6 @@ namespace owl::prometheus {
         return Histogram{std::string{name}, std::move(names), nullptr};
     }
 
-    [[nodiscard]] inline std::string dump() {
-        return detail::registry().dump();
-    }
-
     inline void clear() {
         detail::registry().clear();
     }

@@ -68,10 +68,13 @@ namespace {
     coro::task<owl::Response> timing(const owl::Request& req, owl::Next<AppState> next) {
         const auto start = std::chrono::steady_clock::now();
         owl::Response res = co_await next(req);
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - start).count();
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
         res.header("x-elapsed-ms", std::to_string(elapsed));
         co_return std::move(res);
+    }
+
+    owl::Response prometheus() {
+        return owl::Response::ok(owl::prometheus::dump());
     }
 }
 
@@ -80,7 +83,8 @@ int main() {
 
     auto v1 = owl::Router<AppState>::make()
               .route<"/ping">(owl::get(ping))
-              .route<"/hits">(owl::get(hits));
+              .route<"/hits">(owl::get(hits))
+              .route<"/prometheus">(owl::get(prometheus));
 
     auto router = owl::Router<AppState>::make()
                   .layer(timing)

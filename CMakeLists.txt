@@ -25,12 +25,14 @@ if (BUILD_TESTING)
     FetchContent_MakeAvailable(googletest)
 endif ()
 
+if (OWL_ENABLE_PROMETHEUS)
+    # Added before owl so the owl target can link it.
+    add_subdirectory(prometheus)
+endif ()
+
 add_subdirectory(coro)
 add_subdirectory(fstr)
 add_subdirectory(owl)
-if (OWL_ENABLE_PROMETHEUS)
-    add_subdirectory(prometheus)
-endif ()
 
 target_link_libraries(${PROJECT_NAME}_demo PRIVATE
         ${PROJECT_NAME}::coro

@@ -1,55 +1,45 @@
 #pragma once
 
-#include <chrono>
+// HTTP RED on top of the registry. The caller owns the HTTP side -- where
+// method/route/status come from, and whether unmatched requests are counted
+// -- so this header knows nothing about any web framework.
+
 #include <string>
 #include <string_view>
 
-#include <coro/task.h>
-
-#include "owl/core/method.h"
-#include "owl/http/request.h"
-#include "owl/http/response.h"
-#include "owl/routing/middleware.h"
 #include "prometheus/registry.h"
 
 namespace owl::prometheus {
-    inline void record_request(const owl::Request& req, const int status, const double elapsed) {
+    // Recording must never break the request path, so registry errors (name
+    // and label violations) are swallowed rather than propagated.
+    inline void record_request(
+        const std::string_view method,
+        const std::string_view pattern,
+        const int status,
+        const double elapsed
+    ) noexcept {
         try {
-            const auto method = owl::to_string(req.method());
             const auto code = std::to_string(status);
-            const auto route = req.route_pattern().empty() ? std::string_view{"unmatched"} : req.route_pattern();
-            counter("http_requests_total", {"method", "status", "route"}).labels({method, code, route}).inc();
-            histogram("http_request_duration_seconds", {"method", "status", "route"}).labels({method, code, route}).observe(elapsed);
+            counter("http_requests_total", {"method", "status", "route"}).labels({method, code, pattern}).inc();
+            histogram("http_request_duration_seconds", {"method", "status", "route"}).labels({method, code, pattern}).observe(elapsed);
         } catch (...) {
         }
     }
 
-    // 404/405 never enter middleware. Count only — observe(0) would pull
-    // latency percentiles toward zero on scans.
-    inline void record_unmatched(const owl::Request& req, const int status) {
+    // Requests that never reached a handler -- 404/405, or a layer kicked
+    // before the router. Count only: there is no honest elapsed to report,
+    // and a fabricated zero sample would pull latency percentiles down.
+    inline void record_unmatched(const std::string_view method, const std::string_view pattern, const int status) noexcept {
         try {
-            const auto method = owl::to_string(req.method());
             const auto code = std::to_string(status);
-            constexpr std::string_view route = "unmatched";
-            counter("http_requests_total", {"method", "status", "route"}).labels({method, code, route}).inc();
+            counter("http_requests_total", {"method", "status", "route"}).labels({method, code, pattern}).inc();
         } catch (...) {
         }
     }
 
-    inline constexpr auto http = [](const owl::Request& req, auto next) -> coro::task<owl::Response> {
-        struct InFlight final {
-            InFlight() { gauge("http_requests_in_flight").inc(); }
-            ~InFlight() { gauge("http_requests_in_flight").dec(); }
-        };
-        const InFlight in_flight{};
-        const auto start = std::chrono::steady_clock::now();
-        try {
-            owl::Response res = co_await next(req);
-            record_request(req, res.status(), std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
-            co_return res;
-        } catch (...) {
-            record_request(req, 500, std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
-            throw;
-        }
-    };
+    // The scrape body: Prometheus text 0.0.4. Serve it yourself with
+    // Content-Type: text/plain; version=0.0.4; charset=utf-8.
+    [[nodiscard]] static std::string dump() {
+        return detail::registry().dump();
+    }
 }

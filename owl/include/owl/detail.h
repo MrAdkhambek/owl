@@ -1,12 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <type_traits>
-
-#include "owl/http/detail/finish.h"
-#include "owl/http/request.h"
-
-#include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 
@@ -14,7 +8,14 @@
 
 #include "coro/task.h"
 #include "owl/coro/loop_scheduler.h"
+#include "owl/http/detail/finish.h"
+#include "owl/http/request.h"
 #include "owl/routing/router.h"
+
+#ifdef OWL_ENABLE_PROMETHEUS
+#include <chrono>
+#include <prometheus/http.h>
+#endif
 
 namespace owl::detail {
     struct Worker {
@@ -57,13 +58,26 @@ namespace owl::detail {
             const MiddlewareChain<S>* const front,
             const Context<S>* const ctx
         ) -> coro::task<> {
+                // The clock starts before try: a handler that throws must
+                // still be recorded with the time it spent unwinding.
+#ifdef OWL_ENABLE_PROMETHEUS
+                const auto start = std::chrono::steady_clock::now();
+#endif
                 try {
                     Terminal<S> term{h};
                     const auto span = ch.splice(front);
                     const Next<S> next{span.data, span.count, &term, ctx};
                     auto response = co_await next(*r);
+#ifdef OWL_ENABLE_PROMETHEUS
+                    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                    owl::prometheus::record_request(to_string(r->method()), r->route_pattern(), response.status(), elapsed);
+#endif
                     co_await std::move(response).send(r->raw());
                 } catch (...) {
+#ifdef OWL_ENABLE_PROMETHEUS
+                    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+                    owl::prometheus::record_request(to_string(r->method()), r->route_pattern(), 500, elapsed);
+#endif
                     send_error_floor(r->raw(), 500);
                 }
             }(handler, request, std::move(chains), server_layers, context);
@@ -115,6 +129,10 @@ namespace owl::detail {
 
             if (handler == nullptr) {
                 const auto allowed = dispatcher->router->allowed_methods(request->path());
+#ifdef OWL_ENABLE_PROMETHEUS
+                const auto status = allowed.empty() ? 404 : 405;
+                owl::prometheus::record_unmatched(to_string(request->method()), request->route_pattern(), status);
+#endif
                 allowed.empty() ? send_not_found(req) : send_not_allowed(req, allowed.to_allow_header());
                 return 0;
             }
@@ -124,6 +142,13 @@ namespace owl::detail {
                                                         : nullptr;
             launch_handler(handler, request, req, std::move(chains), front, context);
         } catch (...) {
+#ifdef OWL_ENABLE_PROMETHEUS
+            // The exchange never produced a handler response -- Request
+            // construction, match, or launch failed -- so it is counted under
+            // the unmatched route rather than a real one. The raw h2o method
+            // token is used because Request::from may itself be what threw.
+            owl::prometheus::record_unmatched(std::string_view{req->method.base, req->method.len}, "unmatched", 500);
+#endif
             send_error_floor(req, 500);
         }
         return 0;

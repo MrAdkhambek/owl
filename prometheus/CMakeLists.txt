@@ -8,8 +8,6 @@ target_include_directories(prometheus INTERFACE
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_link_libraries(prometheus INTERFACE owl)
-
 target_sources(prometheus INTERFACE
         FILE_SET HEADERS
         BASE_DIRS "${CMAKE_CURRENT_SOURCE_DIR}/include"

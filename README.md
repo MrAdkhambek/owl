@@ -46,9 +46,9 @@ int main() {
 | [**owl**](owl/README.md) | `owl::owl` | `<owl/owl.h>` | Typed routes on libh2o; coroutine handlers stay on the event loop |
 | [**coro**](coro/README.md) | `owl::coro` | `<coro/coro.h>` | Lazy tasks, generators, schedulers, an I/O reactor |
 | [**fstr**](fstr/README.md) | `owl::fstr` | `<fstr/fstr.h>` | String literals as structural NTTPs |
-| [**prometheus**](prometheus/README.md) | `owl::prometheus` | `<prometheus/prometheus.h>` | HTTP RED + scrape handler; `-DOWL_ENABLE_PROMETHEUS=ON` |
+| [**prometheus**](prometheus/README.md) | `owl::prometheus` | `<prometheus/prometheus.h>` | Counters, gauges, histograms, HTTP RED; standalone; `-DOWL_ENABLE_PROMETHEUS=ON` |
 
-`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` pulls `owl::owl` and is off by default.
+`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` stands alone; with `-DOWL_ENABLE_PROMETHEUS=ON` it is `owl::owl` that pulls it, and dispatch records HTTP RED automatically.
 
 Each library lives in `include/<name>/` so the prefix is part of the include. Public headers are `#pragma once`.
 
