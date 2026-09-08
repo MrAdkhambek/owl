@@ -10,6 +10,8 @@ include(GNUInstallDirs)
 include(CTest)
 
 option(OWL_ENABLE_PROMETHEUS "Build owl::prometheus (HTTP RED + scrape handler)" OFF)
+option(OWL_ENABLE_SQLITE "Build owl::sql sqlite driver" OFF)
+option(OWL_ENABLE_POSTGRESQL "Build owl::sql postgres driver" OFF)
 
 add_executable(${PROJECT_NAME}_demo main.cpp)
 
@@ -30,6 +32,11 @@ if (OWL_ENABLE_PROMETHEUS)
     add_subdirectory(prometheus)
 endif ()
 
+if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
+    # Added before owl so the owl target can link it.
+    add_subdirectory(sql)
+endif ()
+
 add_subdirectory(coro)
 add_subdirectory(fstr)
 add_subdirectory(owl)
@@ -39,8 +46,12 @@ target_link_libraries(${PROJECT_NAME}_demo PRIVATE
         ${PROJECT_NAME}::fstr
         ${PROJECT_NAME}::owl)
 
-if (OWL_ENABLE_PROMETHEUS)
+if (OWL_ENABLE_PROMETHEUS AND (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL))
+    install(TARGETS coro fstr owl prometheus sql_core sql_sqlite sql_psql sql FILE_SET HEADERS)
+elseif (OWL_ENABLE_PROMETHEUS)
     install(TARGETS coro fstr owl prometheus FILE_SET HEADERS)
+elseif (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
+    install(TARGETS coro fstr owl sql_core sql_sqlite sql_psql sql FILE_SET HEADERS)
 else ()
     install(TARGETS coro fstr owl FILE_SET HEADERS)
 endif ()
