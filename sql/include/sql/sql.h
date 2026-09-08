@@ -8,3 +8,4 @@
 #include "sql/convert.h"
 #include "sql/error.h"
 #include "sql/io.h"
+#include "sql/pool.h"
