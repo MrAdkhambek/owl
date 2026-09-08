@@ -24,6 +24,8 @@ target_sources(sql INTERFACE
         include/sql/sql.h
         include/sql/error.h
         include/sql/convert.h
+        include/sql/detail/placeholders.h
+        include/sql/detail/stmt_key.h
 )
 
 target_link_libraries(sql INTERFACE coro fstr)
@@ -170,4 +172,5 @@ if (BUILD_TESTING)
 
     sql_add_test(test_error)
     sql_add_test(test_convert)
+    sql_add_test(test_placeholders)
 endif ()
