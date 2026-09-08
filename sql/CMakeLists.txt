@@ -137,6 +137,12 @@ if (BUILD_TESTING)
 
     sql_add_test(test_cell)
     sql_add_test(test_row)
+    sql_add_test(test_placeholders)
+
+    sql_add_compile_fail_test(rejects_mixed_styles)
+    sql_add_compile_fail_test(rejects_named_params)
+    sql_add_compile_fail_test(rejects_numbered_params)
+    sql_add_compile_fail_test(rejects_holes)
 
     # One TU per public header, each including only that header -- proves
     # self-containment and makes "compiled by nothing" impossible. Driver
