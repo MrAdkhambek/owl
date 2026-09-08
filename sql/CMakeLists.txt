@@ -141,6 +141,7 @@ if (BUILD_TESTING)
     sql_add_test(test_binds)
     sql_add_test(test_resume_reactor)
     sql_add_test(test_sqlite_driver)
+    sql_add_test(test_pool)
 
     sql_add_compile_fail_test(rejects_mixed_styles)
     sql_add_compile_fail_test(rejects_named_params)
