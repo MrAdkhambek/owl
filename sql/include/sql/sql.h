@@ -11,3 +11,7 @@
 #include "sql/pool.h"
 #include "sql/query.h"
 #include "sql/transaction.h"
+
+#ifdef OWL_ENABLE_SQLITE
+#include "sql/sqlite.h"
+#endif
