@@ -11,6 +11,10 @@
 #include <sql/null.h>
 #include <sql/result.h>
 
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <sql/psql.h>
+#endif
+
 namespace {
     // The sentinel contract: writers guarantee one past the end is NUL, so a
     // cell holding embedded NULs still reads as a C string up to its length.
@@ -57,3 +61,18 @@ namespace {
         EXPECT_EQ(r[0][0].bytes().size(), 3);
     }
 }
+
+#ifdef OWL_ENABLE_POSTGRESQL
+namespace sql_detail_decode {
+    TEST(Cell, ByteaHexAndEscapeBothDecode) {
+        const auto hex = sql::detail::decode_bytea("\\x48656c6c6f00");
+        ASSERT_EQ(hex.size(), 6);
+        EXPECT_EQ(hex[0], 'H');
+        EXPECT_EQ(hex[5], '\0');
+
+        const auto escaped = sql::detail::decode_bytea("Hello\\000");
+        ASSERT_EQ(escaped.size(), 6);
+        EXPECT_EQ(escaped[5], '\0');
+    }
+}
+#endif
