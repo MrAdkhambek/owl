@@ -119,7 +119,6 @@ namespace sql {
     public:
         static constexpr sql::dialect dialect = sql::dialect::sqlite;
         static constexpr bool owns_thread = true;
-        using reactor_type = class reactor;
 
         struct config final {
             std::string path;
@@ -194,6 +193,11 @@ namespace sql {
             sqlite3* db_ = nullptr;
             std::thread thread_;
         };
+
+        // The alias must come after the definition: an alias to an
+        // elaborated-type-specifier before the class body would declare a
+        // different, forever-incomplete sql::reactor.
+        using reactor_type = reactor;
 
         class connection final {
         public:
