@@ -23,6 +23,7 @@ target_sources(sql INTERFACE
         FILES
         include/sql/sql.h
         include/sql/error.h
+        include/sql/concepts.h
         include/sql/convert.h
         include/sql/io.h
         include/sql/detail/placeholders.h
@@ -175,4 +176,5 @@ if (BUILD_TESTING)
     sql_add_test(test_convert)
     sql_add_test(test_placeholders)
     sql_add_test(test_io)
+    sql_add_test(test_concepts)
 endif ()
