@@ -6,6 +6,14 @@
 
 #include "owl/coro/loop_scheduler.h"
 
+#ifdef OWL_ENABLE_POSTGRESQL
+#include "owl/coro/loop_reactor.h"
+#include <sql/psql.h>
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <sql/sqlite_handle.h>
+#endif
+
 namespace owl {
     // Per-worker server state handed to extractors and the handler. Passed by
     // const ref through the chain; not stored on Request so HTTP stays HTTP.
@@ -37,6 +45,21 @@ namespace owl {
         // kicks 500 rather than handing out a scheduler that would swallow
         // posts into the void.
         owl::loop_scheduler loop;
+
+#ifdef OWL_ENABLE_POSTGRESQL
+        // The psql pool holds this reactor's address, so the reactor is
+        // declared first; a Context is neither copyable nor movable, so the
+        // address is stable. Default-constructed null: wiring happens in
+        // on_context_init, and a null member means the extractor kicks 500
+        // (with_psql not called) -- a wiring mistake, not caller error.
+        owl::loop_reactor reactor;
+        std::shared_ptr<sql::pool<sql::psql>> psql;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        // The process-wide pool plus this worker's resumer -- the only
+        // place the worker's resumer is recorded (no thread-local).
+        sql::sqlite_handle sqlite;
+#endif
     };
 
     template <typename T>

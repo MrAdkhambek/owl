@@ -69,6 +69,12 @@ if (OWL_ENABLE_PROMETHEUS)
     target_compile_definitions(owl INTERFACE OWL_ENABLE_PROMETHEUS)
 endif ()
 
+if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
+    # sql is added before owl (owl must link it); the OWL_ENABLE_* macros
+    # ride on the driver targets and arrive transitively.
+    target_link_libraries(owl INTERFACE sql)
+endif ()
+
 target_link_libraries(owl INTERFACE
         PkgConfig::H2O
         coro
@@ -122,6 +128,10 @@ if (BUILD_TESTING)
 
     if (OWL_ENABLE_PROMETHEUS)
         owl_add_test(test_prometheus_dispatch)
+    endif ()
+
+    if (OWL_ENABLE_SQLITE AND OWL_ENABLE_POSTGRESQL)
+        owl_add_test(test_owl_wiring)
     endif ()
 
     function(owl_add_compile_fail_test name)

@@ -61,3 +61,51 @@ if (@OWL_ENABLE_PROMETHEUS@)
                 INTERFACE_LINK_LIBRARIES "")
     endif ()
 endif ()
+
+if (@OWL_ENABLE_SQLITE@ OR @OWL_ENABLE_POSTGRESQL@)
+    # owl::sql mirrors the build-tree tiers; owl::owl links it just as in
+    # the build tree, and the OWL_ENABLE_* macros ride on the driver
+    # targets.
+    if (NOT TARGET owl::sql_core)
+        add_library(owl::sql_core INTERFACE IMPORTED)
+        set_target_properties(owl::sql_core PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+                INTERFACE_COMPILE_FEATURES cxx_std_23
+                INTERFACE_LINK_LIBRARIES "owl::coro;owl::fstr")
+    endif ()
+
+    if (@OWL_ENABLE_SQLITE@)
+        find_dependency(SQLite3)
+        if (NOT TARGET owl::sql_sqlite)
+            add_library(owl::sql_sqlite INTERFACE IMPORTED)
+            set_target_properties(owl::sql_sqlite PROPERTIES
+                    INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+                    INTERFACE_COMPILE_FEATURES cxx_std_23
+                    INTERFACE_COMPILE_DEFINITIONS OWL_ENABLE_SQLITE
+                    INTERFACE_LINK_LIBRARIES "owl::sql_core;SQLite::SQLite3")
+        endif ()
+    endif ()
+
+    if (@OWL_ENABLE_POSTGRESQL@)
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(PQ REQUIRED IMPORTED_TARGET libpq)
+        if (NOT TARGET owl::sql_psql)
+            add_library(owl::sql_psql INTERFACE IMPORTED)
+            set_target_properties(owl::sql_psql PROPERTIES
+                    INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+                    INTERFACE_COMPILE_FEATURES cxx_std_23
+                    INTERFACE_COMPILE_DEFINITIONS OWL_ENABLE_POSTGRESQL
+                    INTERFACE_LINK_LIBRARIES "owl::sql_core;PkgConfig::PQ")
+        endif ()
+    endif ()
+
+    if (NOT TARGET owl::sql)
+        add_library(owl::sql INTERFACE IMPORTED)
+        set_target_properties(owl::sql PROPERTIES
+                INTERFACE_INCLUDE_DIRECTORIES "${owl_INCLUDE_DIR}"
+                INTERFACE_COMPILE_FEATURES cxx_std_23
+                INTERFACE_LINK_LIBRARIES "owl::sql_core$<IF:$<BOOL:@OWL_ENABLE_SQLITE@>,;owl::sql_sqlite,>$<IF:$<BOOL:@OWL_ENABLE_POSTGRESQL@>,;owl::sql_psql,>")
+    endif ()
+    set_property(TARGET owl::owl APPEND PROPERTY
+            INTERFACE_LINK_LIBRARIES owl::sql)
+endif ()

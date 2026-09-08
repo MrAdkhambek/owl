@@ -16,6 +16,12 @@
 #include <chrono>
 #include <prometheus/http.h>
 #endif
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <sql/psql.h>
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <sql/sqlite_handle.h>
+#endif
 
 namespace owl::detail {
     struct Worker {
@@ -30,6 +36,12 @@ namespace owl::detail {
         const Router<S>* router;
         const MiddlewareChain<S>* server_layers;
         std::shared_ptr<S> state;
+#ifdef OWL_ENABLE_POSTGRESQL
+        std::optional<sql::psql::config> psql_config;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        std::shared_ptr<sql::pool<sql::sqlite>> sqlite;
+#endif
     };
 
     struct SendJob {
@@ -104,6 +116,19 @@ namespace owl::detail {
         // safe from the pool threads.
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
         context->loop = loop_scheduler{ctx->loop, &context->hop};
+#ifdef OWL_ENABLE_POSTGRESQL
+        context->reactor = owl::loop_reactor{ctx->loop};
+        if (dispatcher->psql_config) {
+            // with_psql not called: stays null, the extractor kicks 500.
+            context->psql = std::make_shared<sql::pool<sql::psql>>(
+                *dispatcher->psql_config, sql::any_reactor{&context->reactor});
+        }
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        if (dispatcher->sqlite) {
+            context->sqlite = sql::sqlite_handle{dispatcher->sqlite, sql::resumer{&context->loop}};
+        }
+#endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
 
