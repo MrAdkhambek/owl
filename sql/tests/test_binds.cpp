@@ -38,8 +38,9 @@ namespace {
 
     TEST(Binds, BlobsRoundTrip) {
         const std::vector<std::byte> blob{std::byte{1}, std::byte{0}, std::byte{2}};
+        const auto binds = sql::detail::make_binds(blob);
 
-        const auto& stored = std::get<std::vector<std::byte>>(sql::detail::make_binds(blob)[0].value);
+        const auto& stored = std::get<std::vector<std::byte>>(binds[0].value);
 
         EXPECT_EQ(stored, blob);
     }
