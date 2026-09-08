@@ -2,11 +2,14 @@
 
 #include <string>
 #include <type_traits>
+#include <vector>
 
 #include <sql/cell.h>
+#include <sql/detail/table.h>
 #include <sql/dialect.h>
 #include <sql/error.h>
 #include <sql/null.h>
+#include <sql/result.h>
 
 namespace {
     // The sentinel contract: writers guarantee one past the end is NUL, so a
@@ -38,5 +41,19 @@ namespace {
 
     TEST(Null, TagIsAConstant) {
         static_assert(std::is_same_v<decltype(sql::null), const sql::null_t>);
+    }
+
+    TEST(Cell, BlobRoundTripSurvivesEmbeddedNul) {
+        sql::detail::table t;
+        t.add_column("blob");
+        const std::string raw{'a', '\0', 'b'};
+        t.add_cell(raw, false);
+        t.end_row();
+
+        const sql::result r{std::move(t), sql::dialect::sqlite};
+        const auto blob = r[0][0].as<std::vector<std::byte>>();
+        ASSERT_EQ(blob.size(), 3);
+        EXPECT_EQ(blob[1], std::byte{0});
+        EXPECT_EQ(r[0][0].bytes().size(), 3);
     }
 }

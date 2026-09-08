@@ -136,6 +136,7 @@ if (BUILD_TESTING)
     endfunction()
 
     sql_add_test(test_cell)
+    sql_add_test(test_row)
 
     # One TU per public header, each including only that header -- proves
     # self-containment and makes "compiled by nothing" impossible. Driver
