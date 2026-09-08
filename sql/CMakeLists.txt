@@ -27,6 +27,7 @@ target_sources(sql INTERFACE
         include/sql/convert.h
         include/sql/io.h
         include/sql/pool.h
+        include/sql/query.h
         include/sql/detail/placeholders.h
         include/sql/detail/stmt_key.h
 )
@@ -179,4 +180,8 @@ if (BUILD_TESTING)
     sql_add_test(test_io)
     sql_add_test(test_concepts)
     sql_add_test(test_pool)
+    sql_add_test(test_query)
+    sql_add_compile_fail_test(rejects_arity_mismatch)
+    sql_add_compile_fail_test(rejects_placeholder_hole)
+    sql_add_compile_fail_test(rejects_unbindable_argument)
 endif ()
