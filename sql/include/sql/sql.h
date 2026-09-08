@@ -4,4 +4,5 @@
 // build option, because each needs its C library; the rest is always
 // here. The CMake guard keeps this list equal to the public header tree.
 
+#include "sql/convert.h"
 #include "sql/error.h"

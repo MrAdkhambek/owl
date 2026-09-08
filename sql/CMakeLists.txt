@@ -23,6 +23,7 @@ target_sources(sql INTERFACE
         FILES
         include/sql/sql.h
         include/sql/error.h
+        include/sql/convert.h
 )
 
 target_link_libraries(sql INTERFACE coro fstr)
@@ -168,4 +169,5 @@ if (BUILD_TESTING)
     endfunction()
 
     sql_add_test(test_error)
+    sql_add_test(test_convert)
 endif ()
