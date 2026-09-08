@@ -28,6 +28,7 @@ target_sources(sql INTERFACE
         include/sql/io.h
         include/sql/pool.h
         include/sql/query.h
+        include/sql/transaction.h
         include/sql/detail/placeholders.h
         include/sql/detail/stmt_key.h
 )
@@ -181,7 +182,11 @@ if (BUILD_TESTING)
     sql_add_test(test_concepts)
     sql_add_test(test_pool)
     sql_add_test(test_query)
+    sql_add_test(test_transaction)
     sql_add_compile_fail_test(rejects_arity_mismatch)
     sql_add_compile_fail_test(rejects_placeholder_hole)
     sql_add_compile_fail_test(rejects_unbindable_argument)
+    sql_add_compile_fail_test(rejects_nested_transaction)
+    sql_add_compile_fail_test(rejects_transaction_body_returning_task_t)
+    sql_add_compile_fail_test(rejects_transaction_body_not_a_task)
 endif ()

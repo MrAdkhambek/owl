@@ -10,3 +10,4 @@
 #include "sql/io.h"
 #include "sql/pool.h"
 #include "sql/query.h"
+#include "sql/transaction.h"
