@@ -6,3 +6,4 @@
 
 #include "sql/convert.h"
 #include "sql/error.h"
+#include "sql/io.h"
