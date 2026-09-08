@@ -7,6 +7,7 @@
 #include "owl/core/method.h"
 #include "owl/core/state.h"
 #include "owl/core/token.h"
+#include "owl/coro/loop_reactor.h"
 #include "owl/coro/loop_scheduler.h"
 #include "owl/extract/extractors.h"
 #include "owl/extract/from_context.h"

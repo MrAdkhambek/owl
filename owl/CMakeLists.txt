@@ -18,6 +18,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/method.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/state.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/token.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/coro/loop_reactor.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/coro/loop_scheduler.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/extract/extractors.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/extract/from_context.h"
@@ -82,6 +83,11 @@ enable_language(C)
 add_executable(owl_bench "${CMAKE_CURRENT_SOURCE_DIR}/bench/owl_bench.cpp")
 target_link_libraries(owl_bench PRIVATE ${PROJECT_NAME}::owl)
 
+if (OWL_ENABLE_PROMETHEUS)
+    add_executable(owl_bench_prometheus "${CMAKE_CURRENT_SOURCE_DIR}/bench/owl_bench_prometheus.cpp")
+    target_link_libraries(owl_bench_prometheus PRIVATE ${PROJECT_NAME}::owl)
+endif ()
+
 add_executable(raw_h2o_bench "${CMAKE_CURRENT_SOURCE_DIR}/bench/raw_h2o_server.c")
 target_compile_definitions(raw_h2o_bench PRIVATE H2O_USE_LIBUV=0)
 target_link_libraries(raw_h2o_bench PRIVATE
@@ -111,6 +117,7 @@ if (BUILD_TESTING)
     owl_add_test(test_router)
     owl_add_test(test_middleware)
     owl_add_test(test_loop_scheduler)
+    owl_add_test(test_loop_reactor)
     owl_add_test(test_builder)
 
     if (OWL_ENABLE_PROMETHEUS)
