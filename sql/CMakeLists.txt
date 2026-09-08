@@ -138,6 +138,7 @@ if (BUILD_TESTING)
     sql_add_test(test_cell)
     sql_add_test(test_row)
     sql_add_test(test_placeholders)
+    sql_add_test(test_binds)
 
     sql_add_compile_fail_test(rejects_mixed_styles)
     sql_add_compile_fail_test(rejects_named_params)
