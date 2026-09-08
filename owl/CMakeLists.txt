@@ -130,10 +130,6 @@ if (BUILD_TESTING)
         owl_add_test(test_prometheus_dispatch)
     endif ()
 
-    if (OWL_ENABLE_SQLITE AND OWL_ENABLE_POSTGRESQL)
-        owl_add_test(test_owl_wiring)
-    endif ()
-
     function(owl_add_compile_fail_test name)
         add_executable(${name} EXCLUDE_FROM_ALL "${CMAKE_CURRENT_SOURCE_DIR}/tests/compile_fail/${name}.cpp")
         target_link_libraries(${name} PRIVATE ${PROJECT_NAME}::owl)

@@ -46,15 +46,14 @@ target_link_libraries(${PROJECT_NAME}_demo PRIVATE
         ${PROJECT_NAME}::fstr
         ${PROJECT_NAME}::owl)
 
-if (OWL_ENABLE_PROMETHEUS AND (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL))
-    install(TARGETS coro fstr owl prometheus sql_core sql_sqlite sql_psql sql FILE_SET HEADERS)
-elseif (OWL_ENABLE_PROMETHEUS)
-    install(TARGETS coro fstr owl prometheus FILE_SET HEADERS)
-elseif (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
-    install(TARGETS coro fstr owl sql_core sql_sqlite sql_psql sql FILE_SET HEADERS)
-else ()
-    install(TARGETS coro fstr owl FILE_SET HEADERS)
+set(_owl_install_targets coro fstr owl)
+if (OWL_ENABLE_PROMETHEUS)
+    list(APPEND _owl_install_targets prometheus)
 endif ()
+if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
+    list(APPEND _owl_install_targets sql)
+endif ()
+install(TARGETS ${_owl_install_targets} FILE_SET HEADERS)
 
 include(CMakePackageConfigHelpers)
 configure_package_config_file(

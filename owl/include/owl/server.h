@@ -21,18 +21,6 @@
 #include "owl/routing/router.h"
 #include "owl/detail.h"
 
-#ifdef OWL_ENABLE_POSTGRESQL
-#include <optional>
-
-#include <sql/psql.h>
-#endif
-#ifdef OWL_ENABLE_SQLITE
-#include <memory>
-
-#include <sql/sqlite.h>
-#include <sql/sqlite_handle.h>
-#endif
-
 namespace owl {
     struct Config {
         std::string address = "127.0.0.1";
@@ -40,7 +28,6 @@ namespace owl {
         int backlog = 1024;
         unsigned threads = 1;
     };
-
 
     template <typename S>
     class Server final {
@@ -78,25 +65,6 @@ namespace owl {
                 return std::forward<Self>(self);
             }
 
-#ifdef OWL_ENABLE_POSTGRESQL
-            // This worker shard's postgres connections. A method called
-            // without its macro does not exist, so the misuse is a compile
-            // error, not a build_with check.
-            template <typename Self>
-            [[nodiscard]] auto&& with_psql(this Self&& self, sql::psql::config cfg) {
-                self.psql_config_ = std::move(cfg);
-                return std::forward<Self>(self);
-            }
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            // The process-wide sqlite pool; build_with constructs it.
-            template <typename Self>
-            [[nodiscard]] auto&& with_sqlite(this Self&& self, sql::sqlite::config cfg) {
-                self.sqlite_config_ = std::move(cfg);
-                return std::forward<Self>(self);
-            }
-#endif
-
             // The state is the type: build_with is the only way to finish a
             // server, so a server that never got its state is a compile error
             // rather than a null read per request.
@@ -105,32 +73,13 @@ namespace owl {
                 if (!state) throw std::invalid_argument("Server: state is required");
                 if (!self.router_) throw std::invalid_argument("Server: router is required");
                 if (!self.config_) throw std::invalid_argument("Server: config is required");
-#ifdef OWL_ENABLE_SQLITE
-                std::shared_ptr<sql::pool<sql::sqlite>> sqlite_pool;
-                if (self.sqlite_config_) sqlite_pool = std::make_shared<sql::pool<sql::sqlite>>(*self.sqlite_config_);
-#endif
-                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)
-#ifdef OWL_ENABLE_POSTGRESQL
-                                  ,
-                              std::move(self.psql_config_)
-#endif
-#ifdef OWL_ENABLE_SQLITE
-                              ,
-                              std::move(sqlite_pool)
-#endif
-                };
+                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)};
             }
 
         private:
             std::unique_ptr<Router<S>> router_;
             std::unique_ptr<Config> config_;
             MiddlewareChain<S> layers_{};
-#ifdef OWL_ENABLE_POSTGRESQL
-            std::optional<sql::psql::config> psql_config_;
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            std::optional<sql::sqlite::config> sqlite_config_;
-#endif
         };
 
         [[nodiscard]] static Builder builder() {
@@ -154,16 +103,7 @@ namespace owl {
         }
 
     private:
-        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers, std::shared_ptr<S> state
-#ifdef OWL_ENABLE_POSTGRESQL
-               ,
-               std::optional<sql::psql::config> psql_config
-#endif
-#ifdef OWL_ENABLE_SQLITE
-               ,
-               std::shared_ptr<sql::pool<sql::sqlite>> sqlite_pool
-#endif
-               )
+        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers, std::shared_ptr<S> state)
             : router_(std::move(router)),
               config_(std::move(config)),
               layers_(std::move(layers)),
@@ -193,12 +133,6 @@ namespace owl {
             dispatcher->router = router_.get();
             dispatcher->server_layers = &layers_;
             std::construct_at(&dispatcher->state, state_);
-#ifdef OWL_ENABLE_POSTGRESQL
-            if (psql_config) std::construct_at(&dispatcher->psql_config, std::move(*psql_config));
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            if (sqlite_pool) std::construct_at(&dispatcher->sqlite, std::move(sqlite_pool));
-#endif
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
             // init workers
@@ -261,7 +195,6 @@ namespace owl {
             }
             return fd;
         }
-
 
         std::unique_ptr<Router<S>> router_;
         std::unique_ptr<Config> config_;
