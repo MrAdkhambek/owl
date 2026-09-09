@@ -18,10 +18,8 @@ if (PROJECT_IS_TOP_LEVEL)
 endif ()
 
 option(OWL_ENABLE_PROMETHEUS "Build owl::prometheus (HTTP RED + scrape handler)" OFF)
-option(OWL_ENABLE_SQLITE "Build owl::sql sqlite driver" OFF)
+option(OWL_ENABLE_SQLITE "Build owl::sql sqlite driver (needs sqlite3)" ON)
 option(OWL_ENABLE_POSTGRESQL "Build owl::sql postgres driver" OFF)
-
-add_executable(${PROJECT_NAME}_demo main.cpp)
 
 if (BUILD_TESTING)
     include(FetchContent)
@@ -49,10 +47,6 @@ add_subdirectory(coro)
 add_subdirectory(fstr)
 add_subdirectory(owl)
 
-target_link_libraries(${PROJECT_NAME}_demo PRIVATE
-        ${PROJECT_NAME}::coro
-        ${PROJECT_NAME}::fstr
-        ${PROJECT_NAME}::owl)
 
 set(_owl_install_targets coro fstr owl)
 if (OWL_ENABLE_PROMETHEUS)

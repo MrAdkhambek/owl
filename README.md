@@ -47,9 +47,9 @@ int main() {
 | [**coro**](coro/README.md) | `owl::coro` | `<coro/coro.h>` | Lazy tasks, generators, schedulers, an I/O reactor |
 | [**fstr**](fstr/README.md) | `owl::fstr` | `<fstr/fstr.h>` | String literals as structural NTTPs |
 | [**prometheus**](prometheus/README.md) | `owl::prometheus` | `<prometheus/prometheus.h>` | Counters, gauges, histograms, HTTP RED; standalone; `-DOWL_ENABLE_PROMETHEUS=ON` |
-| [**sql**](sql/README.md) | `owl::sql` | `<sql/sql.h>` | Async Postgres and SQLite for handlers; `-DOWL_ENABLE_POSTGRESQL=ON` / `-DOWL_ENABLE_SQLITE=ON` |
+| [**sql**](sql/README.md) | `owl::sql` | `<sql/sql.h>` | Async SQLite (on by default) and Postgres (`-DOWL_ENABLE_POSTGRESQL=ON`) for handlers |
 
-`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` stands alone; with `-DOWL_ENABLE_PROMETHEUS=ON` it is `owl::owl` that pulls it, and dispatch records HTTP RED automatically. `owl::sql` pulls `owl::coro`, `owl::fstr`, and libpq and/or sqlite3 per option; with either option on, `owl::owl` pulls it and the server wires per-worker pools.
+`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` stands alone; with `-DOWL_ENABLE_PROMETHEUS=ON` it is `owl::owl` that pulls it, and dispatch records HTTP RED automatically. `owl::sql` pulls `owl::coro`, `owl::fstr`, and sqlite3 and/or libpq per option; with either driver on (sqlite is, unless `-DOWL_ENABLE_SQLITE=OFF`), `owl::owl` pulls it and the server wires per-worker pools.
 
 Each library lives in `include/<name>/` so the prefix is part of the include. Public headers are `#pragma once`.
 
@@ -83,7 +83,7 @@ owl::Server<App>::builder()
 
 State is bound on `Server<App>` via `build_with`. `Router<App>` and `Server<App>` share the state type, `nest` only takes the same `S`, and a handler naming `State<T>` for another `T` is a compile error, not a runtime 500.
 
-The demo binary is `owl_demo` from `main.cpp`.
+A small REST API -- register, login, posts on sqlite -- lives in [`examples/rest`](examples/rest/README.md), a standalone CMake project that consumes owl the way an application does.
 
 ## Install
 
@@ -98,7 +98,7 @@ target_link_libraries(app PRIVATE owl::owl)     # web: pulls coro, fstr, h2o
 # target_link_libraries(app PRIVATE owl::coro)  # tasks only
 # target_link_libraries(app PRIVATE owl::fstr)  # NTTPs only
 # target_link_libraries(app PRIVATE owl::prometheus)  # needs -DOWL_ENABLE_PROMETHEUS=ON
-# target_link_libraries(app PRIVATE owl::sql)  # needs an OWL_ENABLE_* option
+# target_link_libraries(app PRIVATE owl::sql)  # sqlite by default; -DOWL_ENABLE_POSTGRESQL=ON adds postgres
 ```
 
 ### `make install`
@@ -132,6 +132,6 @@ A custom prefix needs `CMAKE_PREFIX_PATH`.
 | zlib | `find_package(ZLIB)` |
 | nlohmann_json | FetchContent when using `add_subdirectory`; `find_package` after install |
 | libpq | `find_package(PostgreSQL)` for `-DOWL_ENABLE_POSTGRESQL=ON`; on macOS, `brew install libpq` |
-| sqlite3 | `find_package(SQLite3)` for `-DOWL_ENABLE_SQLITE=ON`; on macOS, `brew install sqlite` |
+| sqlite3 | `find_package(SQLite3)`, on by default (`-DOWL_ENABLE_SQLITE=OFF` drops it); on macOS, `brew install sqlite` |
 
 `owl::coro` needs Threads. `owl::fstr` needs nothing.
