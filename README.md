@@ -48,8 +48,9 @@ int main() {
 | [**fstr**](fstr/README.md) | `owl::fstr` | `<fstr/fstr.h>` | String literals as structural NTTPs |
 | [**prometheus**](prometheus/README.md) | `owl::prometheus` | `<prometheus/prometheus.h>` | Counters, gauges, histograms, HTTP RED; standalone; `-DOWL_ENABLE_PROMETHEUS=ON` |
 | [**sql**](sql/README.md) | `owl::sql` | `<sql/sql.h>` | Async SQLite (on by default) and Postgres (`-DOWL_ENABLE_POSTGRESQL=ON`) for handlers |
+| [**redis**](redis/README.md) | `owl::redis` | `<redis/redis.h>` | Async Redis for handlers: pipelined commands, pub/sub streams; `-DOWL_ENABLE_REDIS=ON` |
 
-`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` stands alone; with `-DOWL_ENABLE_PROMETHEUS=ON` it is `owl::owl` that pulls it, and dispatch records HTTP RED automatically. `owl::sql` pulls `owl::coro`, `owl::fstr`, and sqlite3 and/or libpq per option; with either driver on (sqlite is, unless `-DOWL_ENABLE_SQLITE=OFF`), `owl::owl` pulls it and the server wires per-worker pools.
+`owl::owl` pulls `owl::coro`, `owl::fstr`, `libh2o-evloop`, nlohmann_json, OpenSSL, and zlib. `owl::coro` pulls Threads. `owl::fstr` stands alone. `owl::prometheus` stands alone; with `-DOWL_ENABLE_PROMETHEUS=ON` it is `owl::owl` that pulls it, and dispatch records HTTP RED automatically. `owl::sql` pulls `owl::coro`, `owl::fstr`, and sqlite3 and/or libpq per option; with either driver on (sqlite is, unless `-DOWL_ENABLE_SQLITE=OFF`), `owl::owl` pulls it and the server wires per-worker pools. `owl::redis` pulls `owl::coro` and hiredis; with `-DOWL_ENABLE_REDIS=ON`, `owl::owl` pulls it and the server wires a per-worker client.
 
 Each library lives in `include/<name>/` so the prefix is part of the include. Public headers are `#pragma once`.
 
@@ -99,6 +100,7 @@ target_link_libraries(app PRIVATE owl::owl)     # web: pulls coro, fstr, h2o
 # target_link_libraries(app PRIVATE owl::fstr)  # NTTPs only
 # target_link_libraries(app PRIVATE owl::prometheus)  # needs -DOWL_ENABLE_PROMETHEUS=ON
 # target_link_libraries(app PRIVATE owl::sql)  # sqlite by default; -DOWL_ENABLE_POSTGRESQL=ON adds postgres
+# target_link_libraries(app PRIVATE owl::redis)  # needs -DOWL_ENABLE_REDIS=ON
 ```
 
 ### `make install`
@@ -110,7 +112,7 @@ cmake --install build          # Makefile generators: make -C build install
 # cmake --install build --prefix ~/.local
 ```
 
-Headers land in `<prefix>/include/{owl,coro,fstr}/` (and `prometheus/`, `sql/` if enabled). Then:
+Headers land in `<prefix>/include/{owl,coro,fstr}/` (and `prometheus/`, `sql/`, `redis/` if enabled). Then:
 
 ```cmake
 find_package(owl REQUIRED)
