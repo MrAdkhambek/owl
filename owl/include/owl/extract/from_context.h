@@ -38,10 +38,10 @@
 #include <sql/pool.h>
 #endif
 #ifdef OWL_ENABLE_POSTGRESQL
-#include <sql/psql.h>
+#include <sql/psql/psql.h>
 #endif
 #ifdef OWL_ENABLE_SQLITE
-#include <sql/sqlite.h>
+#include <sql/sqlite/sqlite.h>
 #endif
 
 namespace owl {

@@ -16,7 +16,7 @@
 #include <sql/error.h>
 #include <sql/pool.h>
 #include <sql/query.h>
-#include <sql/sqlite.h>
+#include <sql/sqlite/sqlite.h>
 #include <sql/transaction.h>
 
 #include "support/temp_db.h"

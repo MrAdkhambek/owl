@@ -16,7 +16,7 @@
 
 #include <sql/error.h>
 #include <sql/pool.h>
-#include <sql/psql.h>
+#include <sql/psql/psql.h>
 #include <sql/query.h>
 #include <sql/transaction.h>
 

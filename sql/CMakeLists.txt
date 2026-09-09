@@ -3,8 +3,8 @@
 # FILE_SET as the only header list, and the same tree / manifest / umbrella
 # guard so the three cannot drift.
 #
-# The drivers are optional because each needs a C library: psql.h needs
-# libpq (OWL_ENABLE_POSTGRESQL), sqlite.h needs sqlite3 (OWL_ENABLE_SQLITE).
+# The drivers are optional because each needs a C library: psql/ needs
+# libpq (OWL_ENABLE_POSTGRESQL), sqlite/ needs sqlite3 (OWL_ENABLE_SQLITE).
 # The macros ride on this target, so owl sees them transitively.
 
 add_library(sql INTERFACE)
@@ -29,8 +29,8 @@ target_sources(sql INTERFACE
         include/sql/pool.h
         include/sql/query.h
         include/sql/transaction.h
-        include/sql/sqlite.h
-        include/sql/psql.h
+        include/sql/psql/psql.h
+        include/sql/sqlite/sqlite.h
         include/sql/detail/placeholders.h
         include/sql/detail/rows.h
         include/sql/detail/stmt_key.h
@@ -73,10 +73,10 @@ if (BUILD_TESTING)
     set(_sql_hdr_dir "${CMAKE_CURRENT_BINARY_DIR}/header_checks")
     set(_sql_hdr_srcs "")
     foreach (_h IN LISTS _sql_public)
-        if (_h STREQUAL "sql/psql.h" AND NOT OWL_ENABLE_POSTGRESQL)
+        if (_h MATCHES "^sql/psql/" AND NOT OWL_ENABLE_POSTGRESQL)
             continue()
         endif ()
-        if (_h STREQUAL "sql/sqlite.h" AND NOT OWL_ENABLE_SQLITE)
+        if (_h MATCHES "^sql/sqlite/" AND NOT OWL_ENABLE_SQLITE)
             continue()
         endif ()
         string(REPLACE "/" "_" _stem "${_h}")
