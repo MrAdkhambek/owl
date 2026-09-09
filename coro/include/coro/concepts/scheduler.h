@@ -21,9 +21,10 @@ namespace coro {
     // A scheduler that can also resume a bare coroutine handle from
     // ordinary code -- the delivery half of an executor. Needed by
     // anything that wakes parked coroutines itself (a reactor, a timer
-    // thread) rather than through a co_await.
+    // thread) rather than through a co_await. Const for the same reason
+    // io_reactor is: posting is using the scheduler, not changing it.
     template <typename S>
-    concept postable = scheduler<S> && requires(S& instance, std::coroutine_handle<> continuation) {
+    concept postable = scheduler<S> && requires(const S& instance, std::coroutine_handle<> continuation) {
         { instance.post(continuation) };
     };
 }

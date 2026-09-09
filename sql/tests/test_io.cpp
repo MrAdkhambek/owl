@@ -17,28 +17,28 @@ using namespace std::chrono_literals;
 
 namespace {
     struct recording_reactor final {
-        std::vector<int> released;
+        mutable std::vector<int> released;
         coro::wait_status answer = coro::wait_status::ready;
 
-        coro::task<coro::wait_status> wait(int, coro::interest, std::chrono::milliseconds) {
+        coro::task<coro::wait_status> wait(int, coro::interest, std::chrono::milliseconds) const {
             co_return answer;
         }
 
-        coro::task<coro::wait_status> sleep(std::chrono::milliseconds) {
+        coro::task<coro::wait_status> sleep(std::chrono::milliseconds) const {
             co_return answer;
         }
 
-        void release(const int fd) {
+        void release(const int fd) const {
             released.push_back(fd);
         }
     };
 
     struct plain_reactor final {
-        coro::task<coro::wait_status> wait(int, coro::interest, std::chrono::milliseconds) {
+        coro::task<coro::wait_status> wait(int, coro::interest, std::chrono::milliseconds) const {
             co_return coro::wait_status::timeout;
         }
 
-        coro::task<coro::wait_status> sleep(std::chrono::milliseconds) {
+        coro::task<coro::wait_status> sleep(std::chrono::milliseconds) const {
             co_return coro::wait_status::timeout;
         }
     };

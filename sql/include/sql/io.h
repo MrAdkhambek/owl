@@ -27,7 +27,7 @@ namespace sql {
         scheduler_ref() = default;
 
         template <coro::postable S>
-        explicit scheduler_ref(S& scheduler) noexcept : ctx_(&scheduler), post_(&post_thunk<S>) {
+        explicit scheduler_ref(const S& scheduler) noexcept : ctx_(&scheduler), post_(&post_thunk<S>) {
         }
 
         void post(const std::coroutine_handle<> h) const {
@@ -58,14 +58,14 @@ namespace sql {
         }
 
     private:
-        using post_fn = void (*)(void*, std::coroutine_handle<>);
+        using post_fn = void (*)(const void*, std::coroutine_handle<>);
 
         template <typename S>
-        static void post_thunk(void* const ctx, const std::coroutine_handle<> h) {
-            static_cast<S*>(ctx)->post(h);
+        static void post_thunk(const void* const ctx, const std::coroutine_handle<> h) {
+            static_cast<const S*>(ctx)->post(h);
         }
 
-        void* ctx_{};
+        const void* ctx_{};
         post_fn post_{};
     };
 }

@@ -31,7 +31,7 @@ namespace coro {
         reactor_ref() = default;
 
         template <io_reactor R>
-        explicit reactor_ref(R& reactor) noexcept
+        explicit reactor_ref(const R& reactor) noexcept
             : ctx_(&reactor), wait_(&wait_thunk<R>), release_(&release_thunk<R>), cancel_(&cancel_thunk<R>) {
         }
 
@@ -57,8 +57,8 @@ namespace coro {
         }
 
     private:
-        using wait_fn = task<wait_status> (*)(void*, int, interest, std::chrono::milliseconds);
-        using release_fn = void (*)(void*, int);
+        using wait_fn = task<wait_status> (*)(const void*, int, interest, std::chrono::milliseconds);
+        using release_fn = void (*)(const void*, int);
 
         static task<wait_status> null_wait() {
             co_return wait_status::error;
@@ -66,25 +66,25 @@ namespace coro {
 
         template <typename R>
         static task<wait_status>
-        wait_thunk(void* const ctx, const int fd, const interest want, const std::chrono::milliseconds timeout) {
-            return static_cast<R*>(ctx)->wait(fd, want, timeout);
+        wait_thunk(const void* const ctx, const int fd, const interest want, const std::chrono::milliseconds timeout) {
+            return static_cast<const R*>(ctx)->wait(fd, want, timeout);
         }
 
         template <typename R>
-        static void release_thunk(void* const ctx, const int fd) {
-            if constexpr (requires(R& r, const int f) { r.release(f); }) {
-                static_cast<R*>(ctx)->release(fd);
+        static void release_thunk(const void* const ctx, const int fd) {
+            if constexpr (requires(const R& r, const int f) { r.release(f); }) {
+                static_cast<const R*>(ctx)->release(fd);
             }
         }
 
         template <typename R>
-        static void cancel_thunk(void* const ctx, const int fd) {
-            if constexpr (requires(R& r, const int f) { r.cancel(f); }) {
-                static_cast<R*>(ctx)->cancel(fd);
+        static void cancel_thunk(const void* const ctx, const int fd) {
+            if constexpr (requires(const R& r, const int f) { r.cancel(f); }) {
+                static_cast<const R*>(ctx)->cancel(fd);
             }
         }
 
-        void* ctx_{};
+        const void* ctx_{};
         wait_fn wait_{};
         release_fn release_{};
         release_fn cancel_{};

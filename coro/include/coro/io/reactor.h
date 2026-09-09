@@ -460,7 +460,7 @@ namespace coro {
         // refuses to register (closed, say) reports error from the
         // reactor thread, after the hop.
         [[nodiscard]] task<wait_status> wait(
-            const int fd, const interest want, const std::chrono::milliseconds timeout) {
+            const int fd, const interest want, const std::chrono::milliseconds timeout) const {
             if (fd < 0) co_return wait_status::error;
             park p{.owner = impl_.get(), .req = request{.fd = fd, .want = want, .timeout = timeout}};
             co_return co_await p;
@@ -477,7 +477,7 @@ namespace coro {
         // Parks for the timeout, then reports wait_status::timeout. A
         // non-positive timeout returns ready immediately, without
         // touching the reactor thread.
-        [[nodiscard]] task<wait_status> sleep(const std::chrono::milliseconds timeout) {
+        [[nodiscard]] task<wait_status> sleep(const std::chrono::milliseconds timeout) const {
             if (timeout.count() <= 0) co_return wait_status::ready;
             park p{.owner = impl_.get(), .req = request{.want = interest::read, .timeout = timeout}};
             co_return co_await p;

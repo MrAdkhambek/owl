@@ -103,7 +103,7 @@ namespace coro {
         // Delivers a continuation round-robin to the next worker's
         // queue. postable contract: callable from ordinary code, which
         // is how other threads (timers, the reactor) hand work back.
-        void post(const std::coroutine_handle<> continuation) {
+        void post(const std::coroutine_handle<> continuation) const {
             slot& target = *slots_[next_.fetch_add(1) % slots_.size()];
             {
                 const std::lock_guard lock(target.mutex);
@@ -148,7 +148,10 @@ namespace coro {
         }
 
         std::vector<std::unique_ptr<slot>> slots_;
-        std::atomic<std::size_t> next_{0};
+        // Mutable because post() is const: which worker takes the next
+        // continuation is the pool's own bookkeeping, not something the
+        // caller changes about it.
+        mutable std::atomic<std::size_t> next_{0};
         std::vector<std::thread> threads_;
     };
 

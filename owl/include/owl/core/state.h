@@ -36,30 +36,35 @@ namespace owl {
         // A worker's Context: the scheduler and the reactor are bound to the
         // loop from birth, so neither is assigned into afterwards and
         // neither needs to be movable.
-        Context(std::shared_ptr<S> s, h2o_loop_t* const h2o_loop) noexcept
-            : state(std::move(s)), loop(h2o_loop, &hop), reactor(h2o_loop) {
+        Context(
+            std::shared_ptr<S> s,
+            h2o_loop_t* const h2o_loop
+        ) noexcept
+            : state(std::move(s)),
+              loop(h2o_loop, &hop),
+              reactor(h2o_loop) {
         }
 
         Context(const Context&) = delete;
         Context& operator=(const Context&) = delete;
 
-        std::shared_ptr<S> state;
-
-        // The worker's cross-thread wakeup for loop_scheduler::post(): the
-        // dispatcher registers it on this context's h2o queue when it wires
-        // the worker up, below.
-        h2o_multithread_receiver_t hop{};
+        const std::shared_ptr<S> state;
 
         // The worker's scheduler, wired by the dispatcher at context init and
         // handed to handlers through extraction. Null until then: extraction
         // kicks 500 rather than handing out a scheduler that would swallow
         // posts into the void.
-        owl::loop_scheduler loop;
+        const owl::loop_scheduler loop;
 
         // The worker's fd reactor on the same loop, for whatever on this
         // worker parks on a descriptor -- the psql pool today. Declared
         // before the pools so it outlives them.
-        owl::loop_reactor reactor;
+        const owl::loop_reactor reactor;
+
+        // The worker's cross-thread wakeup for loop_scheduler::post(): the
+        // dispatcher registers it on this context's h2o queue when it wires
+        // the worker up, below.
+        h2o_multithread_receiver_t hop{};
 
 #ifdef OWL_ENABLE_POSTGRESQL
         // Null until on_context_init wires it, and null for good when the
