@@ -84,7 +84,7 @@ owl::Server<App>::builder()
 
 State is bound on `Server<App>` via `build_with`. `Router<App>` and `Server<App>` share the state type, `nest` only takes the same `S`, and a handler naming `State<T>` for another `T` is a compile error, not a runtime 500.
 
-A small REST API -- register, login, posts on sqlite, sessions on redis -- lives in [`examples/rest`](examples/rest/README.md), a standalone CMake project that consumes owl the way an application does, with a Dockerfile and a compose file.
+A small REST API -- register, login, posts on postgres, sessions on redis -- lives in [`examples/rest`](examples/rest/README.md), a standalone CMake project that consumes owl the way an application does, with a Dockerfile, a compose file, and a monkey test.
 
 ## Install
 
