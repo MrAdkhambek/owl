@@ -1,0 +1,6 @@
+#pragma once
+
+// The umbrella: every public header. The configure-time header guard checks
+// that this list, the FILE_SET and the tree agree.
+
+#include "redis/error.h"
