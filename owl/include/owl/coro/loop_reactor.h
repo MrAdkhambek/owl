@@ -30,19 +30,32 @@ namespace owl {
         explicit loop_reactor(h2o_loop_t* const loop) noexcept : loop_(loop) {
         }
 
+        // Movable for on_context_init's `context->reactor = ...` wiring;
+        // nothing is armed at that point, so transferring the map is safe.
+        loop_reactor(loop_reactor&& o) noexcept : loop_(o.loop_), sockets_(std::move(o.sockets_)) {
+            o.loop_ = nullptr;
+        }
+
+        loop_reactor& operator=(loop_reactor&& o) noexcept {
+            loop_ = o.loop_;
+            sockets_ = std::move(o.sockets_);
+            o.loop_ = nullptr;
+            return *this;
+        }
+
         loop_reactor(const loop_reactor&) = delete;
         loop_reactor& operator=(const loop_reactor&) = delete;
 
         [[nodiscard]] coro::task<coro::wait_status>
         wait(const int fd, const coro::interest want, const std::chrono::milliseconds timeout) const {
             if (loop_ == nullptr || fd < 0) co_return coro::wait_status::error;
-            co_await wait_awaiter{.self = this, .fd = fd, .want = want, .timeout = timeout};
+            co_return co_await wait_awaiter{.self = this, .fd = fd, .want = want, .timeout = timeout};
         }
 
         [[nodiscard]] coro::task<coro::wait_status> sleep(const std::chrono::milliseconds timeout) const {
             if (loop_ == nullptr) co_return coro::wait_status::error;
             if (timeout.count() <= 0) co_return coro::wait_status::ready;
-            co_await sleep_awaiter{.self = this, .timeout = timeout};
+            co_return co_await sleep_awaiter{.self = this, .timeout = timeout};
         }
 
         // Hands the fd back before PQfinish closes it: export detaches the

@@ -10,12 +10,17 @@
 using namespace std::chrono_literals;
 
 namespace {
-    void pump(h2o_loop_t* const loop, coro::task<coro::wait_status>&& work) {
+    // Drives the task on the loop and hands back what it answered: a wait
+    // that finished without a status (a body that fell off its end) throws
+    // here, where the test can see it, rather than going unnoticed.
+    coro::wait_status pump(h2o_loop_t* const loop, coro::task<coro::wait_status>&& work) {
         work.start();
         for (int i = 0; i < 2000 && !work.done(); ++i) {
             h2o_evloop_run(loop, 5);
         }
-        ASSERT_TRUE(work.done());
+        EXPECT_TRUE(work.done());
+        if (!work.done()) return coro::wait_status::error;
+        return work.result();
     }
 
     TEST(LoopReactor, SleepAnswersTimeoutAfterTheDuration) {
@@ -25,7 +30,7 @@ namespace {
         auto body = [&]() -> coro::task<coro::wait_status> {
             co_return co_await reactor.sleep(30ms);
         };
-        pump(loop, body());
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
 
         h2o_evloop_destroy(loop);
     }
@@ -40,7 +45,7 @@ namespace {
         auto body = [&]() -> coro::task<coro::wait_status> {
             co_return co_await reactor.wait(fds[0], coro::interest::read, 2s);
         };
-        pump(loop, body());
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::ready);
 
         reactor.release(fds[0]);  // detach the h2o socket before the fd dies
         ::close(fds[0]);
@@ -57,7 +62,7 @@ namespace {
         auto body = [&]() -> coro::task<coro::wait_status> {
             co_return co_await reactor.wait(fds[0], coro::interest::read, 20ms);
         };
-        pump(loop, body());
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
 
         reactor.release(fds[0]);  // detach the h2o socket before the fd dies
         ::close(fds[0]);
@@ -76,7 +81,7 @@ namespace {
         auto body = [&]() -> coro::task<coro::wait_status> {
             co_return co_await reactor.wait(fds[0], coro::interest::read, 20ms);
         };
-        pump(loop, body());
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
         reactor.release(fds[0]);
 
         char buf[1] = {};
