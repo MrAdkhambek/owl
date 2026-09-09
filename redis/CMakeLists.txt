@@ -33,6 +33,7 @@ target_sources(redis INTERFACE
         include/redis/detail/deadline.h
         include/redis/client.h
         include/redis/command.h
+        include/redis/commands.h
         include/redis/detail/args.h
 )
 
@@ -92,5 +93,6 @@ if (BUILD_TESTING)
     redis_add_test(test_client)
     redis_add_test(test_args)
     redis_add_test(test_command)
+    redis_add_test(test_commands)
     redis_add_compile_fail_test(rejects_unbindable_redis_argument)
 endif ()

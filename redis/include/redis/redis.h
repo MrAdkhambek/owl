@@ -9,3 +9,4 @@
 #include "redis/connection.h"
 #include "redis/client.h"
 #include "redis/command.h"
+#include "redis/commands.h"
