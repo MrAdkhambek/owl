@@ -134,34 +134,20 @@ namespace redis {
                 return T{as<typename T::value_type>()};
             } else if constexpr (detail::is_vector_v<T>) {
                 if (!is_aggregate()) throw detail::conversion_error(type(), "a sequence");
+                const std::size_t n = node_->elements;
                 T out;
-                out.reserve(size());
-                for (std::size_t i = 0; i < size(); ++i) out.push_back((*this)[i].template as<typename T::value_type>());
+                out.reserve(n);
+                for (std::size_t i = 0; i < n; ++i) {
+                    out.push_back(reply_view{node_->element[i]}.template as<typename T::value_type>());
+                }
                 return out;
             } else if constexpr (std::same_as<T, std::string>) {
-                switch (type()) {
-                    case reply_type::status:
-                    case reply_type::string:
-                    case reply_type::verbatim:
-                    case reply_type::bignum:
-                    case reply_type::real:
-                        return std::string{text()};
-                    case reply_type::integer:
-                        return std::to_string(node_->integer);
-                    default:
-                        throw detail::conversion_error(type(), "std::string");
-                }
+                if (has_text()) return std::string{text()};
+                if (type() == reply_type::integer) return std::to_string(node_->integer);
+                throw detail::conversion_error(type(), "std::string");
             } else if constexpr (std::same_as<T, std::string_view>) {
-                switch (type()) {
-                    case reply_type::status:
-                    case reply_type::string:
-                    case reply_type::verbatim:
-                    case reply_type::bignum:
-                    case reply_type::real:
-                        return text();
-                    default:
-                        throw detail::conversion_error(type(), "std::string_view");
-                }
+                if (has_text()) return text();
+                throw detail::conversion_error(type(), "std::string_view");
             } else if constexpr (std::same_as<T, bool>) {
                 if (type() == reply_type::boolean) return node_->integer != 0;
                 if (type() == reply_type::integer) {
@@ -202,8 +188,11 @@ namespace redis {
             }
         }
 
-        // The kinds hiredis keeps text for; a real carries its text beside
-        // dval. An error element has text too, but as<T> refuses it above.
+        // The one list of kinds that carry text, which every conversion
+        // above asks rather than restating: a real carries its text beside
+        // dval, and an error element has text too but as<T> refuses it
+        // before reaching here. A new text-carrying RESP type is added here
+        // and nowhere else.
         [[nodiscard]] bool has_text() const noexcept {
             switch (type()) {
                 case reply_type::status:

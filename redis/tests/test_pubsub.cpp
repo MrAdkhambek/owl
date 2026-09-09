@@ -18,21 +18,13 @@
 #include <redis/pubsub.h>
 
 #include "support/fake_server.h"
+#include "support/fixture.h"
 #include "support/resp.h"
 
 using namespace std::chrono_literals;
-using redis_test::close_now;
-using redis_test::cmd;
-using redis_test::expect;
-using redis_test::expect_eof;
-using redis_test::fake_server;
-using redis_test::script;
-using redis_test::send_bytes;
-using redis_test::sleep_for;
+using namespace redis_test;
 
 namespace {
-    const std::string hello = cmd({"HELLO", "3"});
-    const std::string hello_ok = "%1\r\n$5\r\nproto\r\n:3\r\n";
     const std::string subscribe_news = cmd({"SUBSCRIBE", "news"});
     const std::string subscribed = ">3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n";
 
@@ -40,15 +32,6 @@ namespace {
         return ">3\r\n$7\r\nmessage\r\n$" + std::to_string(channel.size()) + "\r\n" + channel + "\r\n$"
             + std::to_string(payload.size()) + "\r\n" + payload + "\r\n";
     }
-
-    struct fixture final {
-        coro::native_reactor reactor;
-        coro::reactor_ref io{reactor};
-
-        coro::task<> hop() {
-            (void)co_await reactor.sleep(1ms);
-        }
-    };
 }
 
 TEST(Pubsub, YieldsMessagesSkipsConfirmationsAndClosesOnDestruction) {

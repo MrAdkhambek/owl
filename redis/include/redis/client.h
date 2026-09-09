@@ -59,7 +59,8 @@
 namespace redis {
     class client final {
     public:
-        client(config cfg, const coro::reactor_ref io) : cfg_(std::move(cfg)), io_(io) {
+        client(config cfg, const coro::reactor_ref io) : cfg_(std::move(cfg)),
+                                                         io_(io) {
         }
 
         ~client() {
@@ -75,11 +76,16 @@ namespace redis {
         // first suspension after the connection exists.
         [[nodiscard]] coro::task<std::expected<reply, error>> send(const std::span<const std::string_view> argv) const {
             if (closed_) co_return std::unexpected(closed_error());
-            if (auto ready = co_await ensure(); !ready) co_return std::unexpected(std::move(ready.error()));
+            // The steady state -- a connection that is open and healthy --
+            // is a pointer test, not a coroutine. ensure() is entered only
+            // when there is actually something to open or discard.
+            if (conn_ == nullptr || !conn_->ok()) {
+                if (auto ready = co_await ensure(); !ready) co_return std::unexpected(std::move(ready.error()));
+            }
             if (!conn_->append(argv)) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
 
+            const auto deadline = detail::deadline_for(cfg_.command_timeout);
             waiter w{};
-            w.deadline = detail::deadline_for(cfg_.command_timeout);
             replies_.push(&w);
             if (replies_.head != &w) {
                 co_await park{&w};
@@ -87,7 +93,7 @@ namespace redis {
             }
 
             // Head: the next reply on the wire is ours.
-            auto r = co_await read_head(w);
+            auto r = co_await read_head(deadline);
             [[maybe_unused]] waiter* const popped = replies_.pop();
             assert(popped == &w);
             if (!r && r.error().kind() != error_kind::command) co_return std::unexpected(fail_rest(std::move(r.error())));
@@ -95,13 +101,10 @@ namespace redis {
             co_return std::move(r);
         }
 
-        void close() {
+        void close() const {
             if (closed_) return;
             closed_ = true;
-            while (waiter* const w = connects_.pop()) {
-                w->closed = true;
-                resume(w);
-            }
+            wake_connects();
             if (replies_.empty()) conn_.reset();
         }
 
@@ -113,13 +116,14 @@ namespace redis {
             return replies_.size;
         }
 
-        // subscribe() opens its own connections from these.
-        [[nodiscard]] const config& cfg() const noexcept {
-            return cfg_;
-        }
-
-        [[nodiscard]] coro::reactor_ref io() const noexcept {
-            return io_;
+        // A connection of one's own, for a caller that cannot share the
+        // multiplexed one: a subscribed connection answers nothing else, so
+        // subscribe() needs its own. Opening lives here rather than at the
+        // call site so that anything a connection to this server needs --
+        // credentials, database, timeouts, and whatever is added later --
+        // is applied in one place for both kinds.
+        [[nodiscard]] coro::task<std::expected<std::unique_ptr<connection>, error>> open_connection() const {
+            return connection::open(cfg_, io_);
         }
 
         // The command API, as members: a client is the one thing a command
@@ -132,19 +136,15 @@ namespace redis {
         // full-expression that built the task; naming the task and awaiting
         // it later with temporaries as arguments dangles.
 
-        template <arg... Args>
-            requires (sizeof...(Args) > 0)
+        template <arg... Args> requires (sizeof...(Args) > 0)
         [[nodiscard]] coro::task<std::expected<reply, error>> try_command(const Args&... args) const {
             const detail::command_args argv{args...};
             co_return co_await send(argv.argv());
         }
 
-        template <arg... Args>
-            requires (sizeof...(Args) > 0)
+        template <arg... Args> requires (sizeof...(Args) > 0)
         [[nodiscard]] coro::task<reply> command(const Args&... args) const {
-            auto r = co_await try_command(args...);
-            if (!r) throw std::move(r.error());
-            co_return std::move(*r);
+            co_return or_throw(co_await try_command(args...));
         }
 
         // The seven the cache, rate-limit and pub/sub cases ask for. Each
@@ -155,116 +155,105 @@ namespace redis {
 
         [[nodiscard]] coro::task<std::expected<std::optional<std::string>, error>>
         try_get(const std::string_view key) const {
-            auto r = co_await try_command("GET", key);
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return r->template as<std::optional<std::string>>();
+            co_return co_await try_as<std::optional<std::string>>("GET", key);
         }
 
         [[nodiscard]] coro::task<std::optional<std::string>> get(const std::string_view key) const {
-            auto r = co_await try_get(key);
-            if (!r) throw std::move(r.error());
-            co_return std::move(*r);
+            co_return or_throw(co_await try_get(key));
         }
 
         [[nodiscard]] coro::task<std::expected<void, error>>
         try_set(const std::string_view key, const std::string_view value) const {
-            auto r = co_await try_command("SET", key, value);
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return std::expected<void, error>{};
+            co_return co_await try_as<void>("SET", key, value);
         }
 
         [[nodiscard]] coro::task<std::expected<void, error>>
         try_set(const std::string_view key, const std::string_view value, const std::chrono::milliseconds ttl) const {
-            auto r = co_await try_command("SET", key, value, "PX", ttl.count());
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return std::expected<void, error>{};
+            co_return co_await try_as<void>("SET", key, value, "PX", ttl.count());
         }
 
         [[nodiscard]] coro::task<> set(const std::string_view key, const std::string_view value) const {
-            auto r = co_await try_set(key, value);
-            if (!r) throw std::move(r.error());
+            co_return or_throw(co_await try_set(key, value));
         }
 
         [[nodiscard]] coro::task<>
         set(const std::string_view key, const std::string_view value, const std::chrono::milliseconds ttl) const {
-            auto r = co_await try_set(key, value, ttl);
-            if (!r) throw std::move(r.error());
+            co_return or_throw(co_await try_set(key, value, ttl));
         }
 
         // One key or a range of keys: both are args, and DEL takes a list.
         template <arg Keys>
         [[nodiscard]] coro::task<std::expected<std::int64_t, error>> try_del(const Keys& keys) const {
-            auto r = co_await try_command("DEL", keys);
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return r->template as<std::int64_t>();
+            co_return co_await try_as<std::int64_t>("DEL", keys);
         }
 
         template <arg Keys>
         [[nodiscard]] coro::task<std::int64_t> del(const Keys& keys) const {
-            auto r = co_await try_del(keys);
-            if (!r) throw std::move(r.error());
-            co_return *r;
+            co_return or_throw(co_await try_del(keys));
         }
 
         [[nodiscard]] coro::task<std::expected<std::int64_t, error>> try_incr(const std::string_view key) const {
-            auto r = co_await try_command("INCR", key);
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return r->template as<std::int64_t>();
+            co_return co_await try_as<std::int64_t>("INCR", key);
         }
 
         [[nodiscard]] coro::task<std::int64_t> incr(const std::string_view key) const {
-            auto r = co_await try_incr(key);
-            if (!r) throw std::move(r.error());
-            co_return *r;
+            co_return or_throw(co_await try_incr(key));
         }
 
         // true when the key existed and now has the TTL.
         [[nodiscard]] coro::task<std::expected<bool, error>>
         try_expire(const std::string_view key, const std::chrono::seconds ttl) const {
-            auto r = co_await try_command("EXPIRE", key, ttl.count());
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return r->template as<bool>();
+            co_return co_await try_as<bool>("EXPIRE", key, ttl.count());
         }
 
         [[nodiscard]] coro::task<bool> expire(const std::string_view key, const std::chrono::seconds ttl) const {
-            auto r = co_await try_expire(key, ttl);
-            if (!r) throw std::move(r.error());
-            co_return *r;
+            co_return or_throw(co_await try_expire(key, ttl));
         }
 
         // EVAL script numkeys key... arg...; the key count is the range's
         // size, which is why keys must be a range and not a single string.
-        template <typename Keys, typename Args>
-            requires detail::range_arg<Keys> && detail::range_arg<Args>
+        template <typename Keys, typename Args> requires detail::range_arg<Keys> && detail::range_arg<Args>
         [[nodiscard]] coro::task<std::expected<reply, error>>
         try_eval(const std::string_view script, const Keys& keys, const Args& args) const {
             co_return co_await try_command("EVAL", script, std::ranges::distance(keys), keys, args);
         }
 
-        template <typename Keys, typename Args>
-            requires detail::range_arg<Keys> && detail::range_arg<Args>
+        template <typename Keys, typename Args> requires detail::range_arg<Keys> && detail::range_arg<Args>
         [[nodiscard]] coro::task<reply> eval(const std::string_view script, const Keys& keys, const Args& args) const {
-            auto r = co_await try_eval(script, keys, args);
-            if (!r) throw std::move(r.error());
-            co_return std::move(*r);
+            co_return or_throw(co_await try_eval(script, keys, args));
         }
 
         // The number of subscribers the message reached.
         [[nodiscard]] coro::task<std::expected<std::int64_t, error>>
         try_publish(const std::string_view channel, const std::string_view payload) const {
-            auto r = co_await try_command("PUBLISH", channel, payload);
-            if (!r) co_return std::unexpected(std::move(r.error()));
-            co_return r->template as<std::int64_t>();
+            co_return co_await try_as<std::int64_t>("PUBLISH", channel, payload);
         }
 
         [[nodiscard]] coro::task<std::int64_t>
         publish(const std::string_view channel, const std::string_view payload) const {
-            auto r = co_await try_publish(channel, payload);
-            if (!r) throw std::move(r.error());
-            co_return *r;
+            co_return or_throw(co_await try_publish(channel, payload));
         }
 
     private:
+        // The two rules every helper above is made of, each written once.
+        // try_as runs the command and reads the reply as the type that
+        // helper promises -- void when the reply is only checked, not read
+        // -- and or_throw is the throwing twin's whole body. A new helper is
+        // then two lines and cannot get either rule subtly wrong.
+        template <typename T, arg... Args>
+        [[nodiscard]] coro::task<std::expected<T, error>> try_as(const Args&... args) const {
+            auto r = co_await try_command(args...);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            if constexpr (std::is_void_v<T>) co_return std::expected<void, error>{};
+            else co_return r->template as<T>();
+        }
+
+        template <typename T>
+        [[nodiscard]] static T or_throw(std::expected<T, error> r) {
+            if (!r) throw std::move(r.error());
+            if constexpr (!std::is_void_v<T>) return std::move(*r);
+        }
+
         // Two links, because a waiter can sit in two queues at once: the
         // head stays in replies_ while it reads, and a baton pass from
         // inside a drain loop parks that same head on ready_. One link
@@ -273,9 +262,7 @@ namespace redis {
             waiter* next{};
             waiter* ready_next{};
             std::coroutine_handle<> h{};
-            std::optional<detail::clock::time_point> deadline{};
             std::optional<error> failure{};
-            bool closed = false;
         };
 
         // Intrusive FIFO over the waiter nodes, which live in the parked
@@ -340,7 +327,8 @@ namespace redis {
                     waiter w{};
                     connects_.push(&w);
                     co_await park{&w};
-                    if (w.closed) co_return std::unexpected(closed_error());
+                    // Woken because the connection opened, the open failed,
+                    // or the client closed; the top of the loop tells which.
                     continue;
                 }
                 opening_ = true;
@@ -366,10 +354,11 @@ namespace redis {
         }
 
         // Flush whatever append() left, then one reply; pushes are skipped.
-        [[nodiscard]] coro::task<std::expected<reply, error>> read_head(const waiter& w) const {
+        [[nodiscard]] coro::task<std::expected<reply, error>>
+        read_head(const std::optional<detail::clock::time_point> deadline) const {
             for (;;) {
-                if (auto f = co_await conn_->flush(detail::remaining(w.deadline)); !f) co_return std::unexpected(std::move(f.error()));
-                auto r = co_await conn_->read(detail::remaining(w.deadline));
+                if (auto f = co_await conn_->flush(detail::remaining(deadline)); !f) co_return std::unexpected(std::move(f.error()));
+                auto r = co_await conn_->read(detail::remaining(deadline));
                 if (r && r->type() == reply_type::push) continue;
                 co_return std::move(r);
             }

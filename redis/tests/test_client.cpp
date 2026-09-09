@@ -19,35 +19,13 @@
 #include <redis/reply.h>
 
 #include "support/fake_server.h"
+#include "support/fixture.h"
 #include "support/resp.h"
 
 using namespace std::chrono_literals;
-using redis_test::close_now;
-using redis_test::cmd;
-using redis_test::expect;
-using redis_test::expect_eof;
-using redis_test::fake_server;
-using redis_test::script;
-using redis_test::send_bytes;
-using redis_test::sleep_for;
+using namespace redis_test;
 
 namespace {
-    const std::string hello = cmd({"HELLO", "3"});
-    const std::string hello_ok = "%1\r\n$5\r\nproto\r\n:3\r\n";
-    const std::string ping = cmd({"PING"});
-    const std::string pong = "+PONG\r\n";
-
-    struct fixture final {
-        coro::native_reactor reactor;
-        coro::reactor_ref io{reactor};
-
-        // Every resumption lands on the reactor thread; a body that starts
-        // concurrent commands from cold hops there first so a completion
-        // cannot race the main thread. sleep parks and resumes there.
-        coro::task<> hop() {
-            (void)co_await reactor.sleep(1ms);
-        }
-    };
 
     using result = std::expected<redis::reply, redis::error>;
 

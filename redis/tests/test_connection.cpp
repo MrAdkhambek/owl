@@ -18,26 +18,13 @@
 #include <redis/reply.h>
 
 #include "support/fake_server.h"
+#include "support/fixture.h"
 #include "support/resp.h"
 
 using namespace std::chrono_literals;
-using redis_test::close_now;
-using redis_test::cmd;
-using redis_test::expect;
-using redis_test::expect_eof;
-using redis_test::fake_server;
-using redis_test::script;
-using redis_test::send_bytes;
-using redis_test::sleep_for;
+using namespace redis_test;
 
 namespace {
-    const std::string hello = cmd({"HELLO", "3"});
-    const std::string hello_ok = "%1\r\n$5\r\nproto\r\n:3\r\n";
-
-    struct fixture final {
-        coro::native_reactor reactor;
-        coro::reactor_ref io{reactor};
-    };
 
     using opened = std::expected<std::unique_ptr<redis::connection>, redis::error>;
 

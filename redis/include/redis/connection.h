@@ -47,6 +47,7 @@
 #include <coro/io/reactor_ref.h>
 #include <coro/task.h>
 
+#include "redis/args.h"
 #include "redis/config.h"
 #include "redis/detail/deadline.h"
 #include "redis/error.h"
@@ -103,13 +104,19 @@ namespace redis {
         // broken and the caller reports connection.
         [[nodiscard]] bool append(const std::span<const std::string_view> argv) {
             if (!ok_ || conn_ == nullptr) return false;
-            std::vector<const char*> ptrs(argv.size());
-            std::vector<std::size_t> lens(argv.size());
-            for (std::size_t i = 0; i < argv.size(); ++i) {
-                ptrs[i] = argv[i].data();
-                lens[i] = argv[i].size();
+            // Unzipped into members rather than locals: hiredis wants two
+            // parallel C arrays, every command needs the same two, and a
+            // connection runs one command at a time. Clearing keeps the
+            // capacity, so only the first command on a connection allocates.
+            ptrs_.clear();
+            lens_.clear();
+            ptrs_.reserve(argv.size());
+            lens_.reserve(argv.size());
+            for (const std::string_view a : argv) {
+                ptrs_.push_back(a.data());
+                lens_.push_back(a.size());
             }
-            if (redisAppendCommandArgv(conn_, static_cast<int>(argv.size()), ptrs.data(), lens.data()) != REDIS_OK) {
+            if (redisAppendCommandArgv(conn_, static_cast<int>(argv.size()), ptrs_.data(), lens_.data()) != REDIS_OK) {
                 ok_ = false;
                 return false;
             }
@@ -172,9 +179,10 @@ namespace redis {
             }
             if (auto r = co_await exchange(hello, deadline); !r) co_return std::unexpected(as_connect(std::move(r.error()), true));
             if (cfg.db != 0) {
-                const std::string db = std::to_string(cfg.db);
-                const std::vector<std::string_view> select{"SELECT", db};
-                if (auto r = co_await exchange(select, deadline); !r) co_return std::unexpected(as_connect(std::move(r.error()), false));
+                const detail::command_args select{"SELECT", cfg.db};
+                if (auto r = co_await exchange(select.argv(), deadline); !r) {
+                    co_return std::unexpected(as_connect(std::move(r.error()), false));
+                }
             }
             co_return std::expected<void, error>{};
         }
@@ -231,6 +239,8 @@ namespace redis {
             ok_ = false;
         }
 
+        std::vector<const char*> ptrs_;
+        std::vector<std::size_t> lens_;
         redisContext* conn_;
         coro::reactor_ref io_;
         int fd_;

@@ -10,14 +10,16 @@
 // so a command_args must not outlive the full-expression that built it;
 // the command functions never let it.
 
+#include <array>
 #include <charconv>
 #include <concepts>
 #include <cstddef>
-#include <deque>
+#include <forward_list>
 #include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <type_traits>
 #include <vector>
 
@@ -51,7 +53,7 @@ namespace redis {
         public:
             template <arg... Args>
             explicit command_args(const Args&... values) {
-                argv_.reserve(sizeof...(Args));
+                argv_.reserve((entries(values) + ... + 0));
                 (add(values), ...);
             }
 
@@ -77,17 +79,48 @@ namespace redis {
                 }
             }
 
-            // A deque keeps every rendered string at a stable address, so
-            // the views handed out stay valid as more are added.
-            template <number_arg T>
-            std::string_view render(const T v) {
-                char buf[64];
-                const auto [end, ec] = std::to_chars(buf, buf + sizeof buf, v);
-                scratch_.emplace_back(buf, end);
-                return scratch_.back();
+            // How many argv entries an argument will contribute, so the
+            // vector is reserved once. A range contributes one per element
+            // rather than one in total, which is the whole point of DEL over
+            // a vector of keys; a range that cannot say its size in advance
+            // falls back to one and reallocates if it was wrong.
+            template <typename T>
+            [[nodiscard]] static std::size_t entries(const T& v) noexcept {
+                if constexpr (std::ranges::sized_range<const T&> && !text_arg<std::remove_cvref_t<T>>) {
+                    return std::ranges::size(v);
+                } else {
+                    return 1;
+                }
             }
 
-            std::deque<std::string> scratch_;
+            // Rendered numbers need an address that stays put while later
+            // arguments are added, which is why they cannot live in the
+            // argv vector's own storage. A fixed arena holds the first few:
+            // to_chars needs at most 24 bytes for any built-in type, and a
+            // command with more than eight numbers in it is not the common
+            // case. The list is the overflow path, and stays empty -- and
+            // unallocated, on either standard library -- until it is needed.
+            static constexpr std::size_t slot = 32;
+            static constexpr std::size_t slots = 8;
+
+            template <number_arg T>
+            std::string_view render(const T v) {
+                if (used_ + slot <= arena_.size()) {
+                    char* const at = arena_.data() + used_;
+                    if (const auto [end, ec] = std::to_chars(at, at + slot, v); ec == std::errc{}) {
+                        used_ += slot;
+                        return {at, static_cast<std::size_t>(end - at)};
+                    }
+                }
+                char buf[64];
+                const auto [end, ec] = std::to_chars(buf, buf + sizeof buf, v);
+                overflow_.emplace_front(buf, end);
+                return overflow_.front();
+            }
+
+            std::array<char, slot * slots> arena_{};
+            std::size_t used_ = 0;
+            std::forward_list<std::string> overflow_;
             std::vector<std::string_view> argv_;
         };
     }

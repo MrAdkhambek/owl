@@ -1,9 +1,9 @@
 #pragma once
 
-// subscribe: the messages of one SUBSCRIBE, as an async_generator. It opens
-// its own connection from the client's config and reactor -- a subscribed
-// connection answers nothing else, so the multiplexed command connection
-// cannot be it -- and reads pushes forever: "message" pushes are yielded,
+// subscribe: the messages of one SUBSCRIBE, as an async_generator. It asks
+// the client for a connection of its own -- a subscribed connection answers
+// nothing else, so the multiplexed command connection cannot be it -- and
+// reads pushes forever: "message" pushes are yielded,
 // everything else (the subscribe confirmations) is skipped. Failure is
 // thrown, because that is how async_generator reports a body failure: at
 // the consumer's next().
@@ -37,7 +37,6 @@
 #include <coro/async_generator.h>
 
 #include "redis/client.h"
-#include "redis/config.h"
 #include "redis/connection.h"
 #include "redis/error.h"
 #include "redis/reply.h"
@@ -50,9 +49,10 @@ namespace redis {
 
     [[nodiscard]] inline coro::async_generator<message>
     subscribe(const client& c, std::vector<std::string> channels, std::stop_token stop = {}) {
-        // Copied: the generator may outlive the expression that named the client.
-        const config cfg = c.cfg();
-        auto opened = co_await connection::open(cfg, c.io());
+        // The client opens it, so a subscriber connection is made the same
+        // way a command connection is; the generator holds nothing of the
+        // client afterwards and may outlive the expression that named it.
+        auto opened = co_await c.open_connection();
         if (!opened) throw std::move(opened.error());
         const std::unique_ptr<connection> conn = std::move(*opened);
         if (stop.stop_requested()) co_return;
@@ -61,11 +61,8 @@ namespace redis {
             ::shutdown(fd, SHUT_RDWR);
         }};
 
-        std::vector<std::string_view> argv;
-        argv.reserve(channels.size() + 1);
-        argv.emplace_back("SUBSCRIBE");
-        for (const auto& channel : channels) argv.emplace_back(channel);
-        if (!conn->append(argv)) throw error{error_kind::connection, "could not queue SUBSCRIBE"};
+        const detail::command_args argv{"SUBSCRIBE", channels};
+        if (!conn->append(argv.argv())) throw error{error_kind::connection, "could not queue SUBSCRIBE"};
         if (auto flushed = co_await conn->flush(std::chrono::milliseconds{-1}); !flushed) {
             if (stop.stop_requested()) co_return;
             throw std::move(flushed.error());
