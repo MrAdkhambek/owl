@@ -1,6 +1,9 @@
 #include <chrono>
 #include <gtest/gtest.h>
+#include <sys/socket.h>
+#include <thread>
 #include <unistd.h>
+#include <utility>
 
 #include <coro/io/reactor.h>
 #include <coro/run/sync_wait.h>
@@ -30,6 +33,42 @@ namespace {
     private:
         int fds_[2]{-1, -1};
     };
+
+    // A connected AF_UNIX pair: full duplex, so one end can carry a read
+    // wait and a write wait at the same time.
+    class socket_pair {
+    public:
+        socket_pair() { EXPECT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds_), 0); }
+
+        ~socket_pair() {
+            if (fds_[0] >= 0) ::close(fds_[0]);
+            if (fds_[1] >= 0) ::close(fds_[1]);
+        }
+
+        socket_pair(const socket_pair&) = delete;
+        socket_pair& operator=(const socket_pair&) = delete;
+
+        [[nodiscard]] int near() const noexcept { return fds_[0]; }
+
+        void write_from_far() const { EXPECT_EQ(::write(fds_[1], "x", 1), 1); }
+
+    private:
+        int fds_[2]{-1, -1};
+    };
+
+    // An fd number the kernel will refuse: it was a pipe end, and is closed.
+    int closed_fd() {
+        int fds[2]{-1, -1};
+        EXPECT_EQ(::pipe(fds), 0);
+        ::close(fds[0]);
+        ::close(fds[1]);
+        return fds[0];
+    }
+
+    coro::task<coro::wait_status> wait_on(coro::native_reactor& reactor, const int fd,
+                                          const coro::interest want, const std::chrono::milliseconds timeout) {
+        co_return co_await reactor.wait(fd, want, timeout);
+    }
 }
 
 TEST(Reactor, SleepReturnsTimeoutAfterTheDuration) {
@@ -88,4 +127,78 @@ TEST(Reactor, NegativeTimeoutWaitsIndefinitelyButStillWakes) {
 
 TEST(Reactor, SatisfiesItsOwnConcept) {
     static_assert(coro::io_reactor<coro::native_reactor>);
+}
+
+// A descriptor the kernel refuses to register -- closed, so EBADF -- must
+// come back as error rather than leave the coroutine parked on nothing. The
+// `fd < 0` guard cannot catch it: the number is fine, the descriptor is not.
+TEST(Reactor, RegistrationFailureReportsErrorInsteadOfParkingForever) {
+    coro::native_reactor reactor;
+    EXPECT_EQ(coro::sync_wait(wait_on(reactor, closed_fd(), coro::interest::read, -1ms)),
+              coro::wait_status::error);
+}
+
+// The same with a deadline. The timer is registered in the same batch as
+// the fd, after it; a batch that stops at the fd's failure never arms the
+// timer either, so this used to park forever as well.
+TEST(Reactor, RegistrationFailureWithADeadlineStillReportsError) {
+    coro::native_reactor reactor;
+    EXPECT_EQ(coro::sync_wait(wait_on(reactor, closed_fd(), coro::interest::read, 200ms)),
+              coro::wait_status::error);
+}
+
+// One descriptor, two directions. A write-readiness wait that completes must
+// take down only its own registration: the read wait still parked on the
+// same fd has to survive it, and wake when data arrives.
+TEST(Reactor, CompletingAWriteWaitLeavesAReadWaitOnTheSameFdArmed) {
+    coro::native_reactor reactor;
+    const socket_pair sockets;
+
+    coro::wait_status reader_saw = coro::wait_status::error;
+    std::thread reader([&] {
+        reader_saw = coro::sync_wait(wait_on(reactor, sockets.near(), coro::interest::read, 2s));
+    });
+    // Let the reactor thread arm the read wait before the write wait arrives.
+    std::this_thread::sleep_for(30ms);
+
+    // A fresh socket is writable at once.
+    EXPECT_EQ(coro::sync_wait(wait_on(reactor, sockets.near(), coro::interest::write, 2s)),
+              coro::wait_status::ready);
+
+    sockets.write_from_far();
+    reader.join();
+    EXPECT_EQ(reader_saw, coro::wait_status::ready) << "the read wait was unregistered by the write wait's completion";
+}
+
+// A timed wait that completes on readiness must take its timer with it.
+// kqueue processes a batch of deletes only up to the first one that fails --
+// here the oneshot read filter, already gone because it fired -- so a naive
+// batch leaves the timer armed against a request that no longer exists. The
+// next wait() frame is the same size and is allocated the moment the last
+// one is freed, so its request lands on that same address and is woken by
+// the stale timer with a timeout it never asked for.
+TEST(Reactor, TimerOfAReadyWaitDoesNotFireIntoALaterWait) {
+    coro::native_reactor reactor;
+    const pipe_pair first;
+    const pipe_pair later;
+
+    auto body = [&]() -> coro::task<std::pair<coro::wait_status, coro::wait_status>> {
+        first.write_byte();
+        const auto ready = co_await reactor.wait(first.read_end(), coro::interest::read, 100ms);
+        const auto untimed = co_await reactor.wait(later.read_end(), coro::interest::read, -1ms);
+        co_return std::pair{ready, untimed};
+    };
+
+    std::thread writer([&later] {
+        std::this_thread::sleep_for(300ms);
+        later.write_byte();
+    });
+    const auto start = std::chrono::steady_clock::now();
+    const auto [ready, untimed] = coro::sync_wait(body());
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    writer.join();
+
+    EXPECT_EQ(ready, coro::wait_status::ready);
+    EXPECT_EQ(untimed, coro::wait_status::ready) << "the stale timer fired into the next wait";
+    EXPECT_GE(elapsed, 250ms) << "an untimed wait ended early";
 }

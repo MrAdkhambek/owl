@@ -26,11 +26,18 @@ namespace coro {
             std::condition_variable signal;
             bool completed = false;
 
+            // The notify happens WITH the lock held, against the usual
+            // advice. The waiter is free to return the instant it sees
+            // `completed` -- it need never be woken -- and once it has
+            // returned, sync_wait destroys this event. Signalling after the
+            // unlock would let that destruction race a notify_all still in
+            // flight on a condition variable that no longer exists.
+            // Holding the lock keeps the waiter out until the signal is
+            // fully sent; the wake-then-block-on-mutex cost that the advice
+            // avoids is nothing next to a use-after-free.
             void mark_done() {
-                {
-                    const std::lock_guard lock(mutex);
-                    completed = true;
-                }
+                const std::lock_guard lock(mutex);
+                completed = true;
                 signal.notify_all();
             }
 

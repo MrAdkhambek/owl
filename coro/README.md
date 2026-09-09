@@ -70,6 +70,8 @@ auto t = add(2, 3);
 int n = std::move(t).get();   // resumes on this thread
 ```
 
+`get()` resumes the body once. A body that suspends on external work -- a timer, a pool, the reactor -- is still parked when that resume returns, and `get()` throws `std::logic_error` saying so rather than pretending it finished. Use `sync_wait` for those.
+
 Awaiting consumes the task -- `co_await std::move(t)` -- so a task is awaited exactly once:
 
 ```cpp
@@ -138,7 +140,11 @@ Two 40 ms and 60 ms sleeps cost ~60 ms together, not ~100 ms.
 
 ### `when_all` / `when_any` — any awaitable
 
-Borrow their children; await them where they were created (they delete move). `when_any` tears down the losers. An empty `when_any` range throws rather than waiting forever.
+Both take any awaitable. The difference is what happens to the children.
+
+`when_all` waits for every child, so it can hold them the cheap way: an rvalue child is moved in, an lvalue child is borrowed, and a non-movable rvalue (`async_mutex::lock_operation`, `as_result` over a bare awaiter) is borrowed too -- that last kind has to be awaited in the expression that built the group. The group itself is not movable, but it can be named: `auto g = when_all(a(), b()); co_await g;` is fine, because `g` owns the tasks it was built from.
+
+`when_any` has no cancellation, so the losers keep running after the winner is reported -- a timer that lost fires anyway, a task on a pool runs to its end -- and their results are dropped. They live in a shared block that outlives the group and is freed by whichever finishes last. Two things follow: `when_any` owns every child (rvalues moved in, lvalues copied; a child that can be neither has to be wrapped in a task), and the executor a loser is parked on must outlive it, exactly like any other parked coroutine. An empty `when_any` range throws rather than waiting forever.
 
 ```cpp
 #include <coro/algo/when_all.h>
@@ -166,7 +172,7 @@ auto named = co_await (fetch_user(id) | coro::fmap([](int id) -> coro::task<std:
 
 ### `combine`
 
-Lockstep zip of two generators. Ends when either side dries up.
+Lockstep zip of two generators. Ends when either side dries up. Both sides are pulled in parallel, so the final step has already pulled one element from the longer side by the time it sees the shorter one end; that element is dropped.
 
 ```cpp
 #include <coro/algo/combine.h>
@@ -185,7 +191,7 @@ while (auto pair = co_await zipped.next()) {
 
 using coro::result;   // std::expected<T, std::exception_ptr>
 
-auto r = co_await (fetch_user(id) | coro::as_result());
+auto r = co_await (fetch_user(id) | coro::as_result());   // task or any awaitable
 if (!r) std::rethrow_exception(r.error());
 int id = *r;
 
@@ -197,7 +203,7 @@ auto [ok, bad] = co_await coro::when_all(
     coro::as_result(fetch_user(-1)));
 ```
 
-`as_tuple` / the awaitable `as_result` allocate no extra frame. `as_tuple` must be able to default-construct `T` for the failure case's value slot -- a type that cannot is `as_result`'s job. `T` on `result<T>` must not be an lvalue reference.
+`as_tuple` / the awaitable `as_result` allocate no extra frame. `as_tuple` must be able to default-construct `T` for the failure case's value slot -- a type that cannot is `as_result`'s job. `T` on `result<T>` must not be an lvalue reference. Both adapters hold a movable rvalue child by value and borrow anything else, under the same rule as `when_all`.
 
 ## Schedulers
 
@@ -251,6 +257,8 @@ coro::task<> hops(coro::timer_scheduler& timer) {
 
 The pool posts round-robin, one queue per worker, with no work stealing. Destroy a pool only when nothing outstanding refers to it.
 
+The same goes for the timer: destroy it only once nothing is parked on it. Whatever still is gets woken early by the destructor, and if it then sleeps on the timer again -- a periodic loop would -- that `co_await` throws `std::logic_error` instead of parking on a queue that is going away, which is how such a loop ends and the destructor returns.
+
 ## I/O reactor
 
 `coro::native_reactor` — kqueue (macOS/BSD) or epoll (Linux). Background thread.
@@ -271,6 +279,9 @@ co_await reactor.sleep(20ms);   // timeout < 0 means forever
 - `wait_status`: `ready`, `timeout`, `cancelled`, `error`
 - Concept `coro::io_reactor` — `wait` and `sleep` return `task<wait_status>`
 - Completions resume on the reactor thread
+- A descriptor the kernel refuses to register (closed, say) comes back as `wait_status::error`; it never parks
+- One waiter per descriptor per direction at a time. A read wait and a write wait on the same fd coexist; a second read wait on the same fd replaces the first in the kernel
+- On epoll, hangup is readiness (`ready`), as `EV_EOF` is on kqueue: the read returns EOF or the buffered tail, the write fails at once, neither blocks. Only `EPOLLERR` is `error`
 - Tear down only when nothing is parked: shutdown force-resumes stragglers with `wait_status::cancelled`, and a coroutine resumed that way must not touch the reactor again
 
 ### `reactor_ref`
@@ -307,4 +318,4 @@ if (m.try_lock()) {
 }
 ```
 
-Waiters acquire FIFO. Uncontended acquire never suspends. `unlock()` resumes the next waiter **inline**. Neither copyable nor movable.
+Waiters acquire FIFO. Uncontended acquire never suspends. `unlock()` resumes the next waiter **inline**, on the unlocking thread -- as a loop, not a recursion: a queue of waiters that each release before suspending again is drained in one `unlock()` call with constant stack, however long the queue. Neither copyable nor movable.

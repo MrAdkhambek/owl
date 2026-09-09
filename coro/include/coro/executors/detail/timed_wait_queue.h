@@ -17,6 +17,7 @@
 #include <functional>
 #include <mutex>
 #include <queue>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -46,7 +47,9 @@ namespace coro::detail {
         // point is delivered anyway (its sleep ends early) and, in
         // debug builds, asserted about: waiters outliving the queue is
         // a bug, because their sleep silently completing is worse than
-        // it not compiling.
+        // it not compiling. A waiter woken this way that tries to sleep
+        // again is refused by enqueue(), which is what guarantees the
+        // join below returns.
         ~timed_wait_queue() {
             {
                 const std::lock_guard lock(mutex_);
@@ -64,10 +67,22 @@ namespace coro::detail {
         // timer thread only when this deadline beats the current
         // earliest -- otherwise the sleeper is already set to wake no
         // later than needed.
+        //
+        // Refused once the queue is shutting down. The shutdown drain
+        // wakes every parked continuation early, and one that sleeps
+        // again from there -- a periodic loop does exactly that -- would
+        // land straight back on the heap and be drained again, at once,
+        // forever, with the destructor never returning. Throwing is what
+        // ends such a loop: the exception surfaces from the co_await and
+        // unwinds the coroutine, and the drain runs dry.
         void enqueue(const time_point deadline, const std::coroutine_handle<> continuation) {
             bool earliest_changed = false;
             {
                 const std::lock_guard lock(mutex_);
+                if (stopping_) {
+                    throw std::logic_error(
+                        "timed_wait_queue is shutting down: a continuation it woke early cannot sleep on it again");
+                }
                 earliest_changed = heap_.empty() || deadline < heap_.top().deadline;
                 heap_.push(entry{.deadline = deadline, .continuation = continuation});
             }
@@ -89,21 +104,22 @@ namespace coro::detail {
         };
 
         // Shutdown path: deliver every queued continuation, whatever
-        // its deadline. Sets drained_at_shutdown_ as a flag for the
-        // destructor's assert.
+        // its deadline. One pass suffices -- enqueue() refuses anything
+        // that arrives while stopping_ is set -- so the heap is empty
+        // when this returns. Sets drained_at_shutdown_ as a flag for
+        // the destructor's assert.
         void drain_all(std::unique_lock<std::mutex>& lock) {
+            if (heap_.empty()) return;
+            drained_at_shutdown_ = true;
+            std::vector<std::coroutine_handle<>> all;
+            all.reserve(heap_.size());
             while (!heap_.empty()) {
-                drained_at_shutdown_ = true;
-                std::vector<std::coroutine_handle<>> all;
-                all.reserve(heap_.size());
-                while (!heap_.empty()) {
-                    all.push_back(heap_.top().continuation);
-                    heap_.pop();
-                }
-                lock.unlock();
-                for (const auto continuation : all) deliver_(continuation);
-                lock.lock();
+                all.push_back(heap_.top().continuation);
+                heap_.pop();
             }
+            lock.unlock();
+            for (const auto continuation : all) deliver_(continuation);
+            lock.lock();
         }
 
         void run() noexcept {

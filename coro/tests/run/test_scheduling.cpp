@@ -62,6 +62,18 @@ namespace {
         counter.fetch_add(1, std::memory_order_relaxed);
         co_return;
     }
+
+    // Asked of the SIGNATURE only, the way a generic caller's own
+    // requires-clause would ask it.
+    template <typename S>
+    concept schedulable_on = requires(S& sched, coro::task<int> t) {
+        coro::schedule_on(sched, std::move(t));
+    };
+
+    template <typename S>
+    concept resumable_on = requires(S& sched, coro::task<int> t) {
+        coro::resume_on(sched, std::move(t));
+    };
 }
 
 TEST(Scheduling, ScheduleResumesOnWorkerNotCaller) {
@@ -172,4 +184,28 @@ TEST(Scheduling, TwentyScheduledTasksAllComplete) {
     }(std::make_index_sequence<20>{});
 
     EXPECT_EQ(counter.load(), 20);
+}
+
+// schedule() is not const, so a const scheduler cannot be scheduled on. The
+// rejection has to happen at the signature, where a caller's constraint can
+// see it, rather than as a hard error inside the wrapper's body.
+TEST(Scheduling, ConstSchedulerIsRejectedAtTheSignature) {
+    static_assert(schedulable_on<coro::static_thread_pool>);
+    static_assert(!schedulable_on<const coro::static_thread_pool>);
+    static_assert(resumable_on<coro::static_thread_pool>);
+    static_assert(!resumable_on<const coro::static_thread_pool>);
+    SUCCEED();
+}
+
+// The worker that finishes a task must be done with sync_wait's event before
+// sync_wait tears it down. The waiter can return the moment it sees
+// `completed` set, so the signal has to be sent while the waiter is still
+// excluded by the lock; a signal sent after unlocking can land on a condition
+// variable that no longer exists. Many quick round trips on a one-worker pool
+// are what make that window show up.
+TEST(Scheduling, RepeatedSyncWaitsOutliveTheirSignal) {
+    coro::static_thread_pool pool{1};
+    for (int i = 0; i < 2000; ++i) {
+        ASSERT_EQ(coro::sync_wait(coro::schedule_on(pool, val(i))), i);
+    }
 }

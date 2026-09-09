@@ -6,7 +6,9 @@
 #include <vector>
 
 #include <coro/algo/when_all.h>
+#include <coro/executors/static_thread_pool.h>
 #include <coro/executors/timer_scheduler.h>
+#include <coro/run/schedule_on.h>
 #include <coro/run/sync_wait.h>
 #include <coro/task.h>
 
@@ -90,4 +92,38 @@ TEST(when_all_t, EmptyPackIsReadyImmediately) {
     };
 
     EXPECT_EQ(coro::sync_wait(body()), 99);
+}
+
+// Children finishing on pool workers race each other, and race the parent's
+// own arrival, on the count that decides who resumes the parent. Two workers
+// that both read 2 and both write 1 leave a count that never reaches zero,
+// and the group hangs; two that both see zero resume the parent twice.
+TEST(when_all_t, ChildrenCompletingOnPoolWorkersAreCountedOnce) {
+    coro::static_thread_pool pool{4};
+
+    auto body = [&pool]() -> coro::task<int> {
+        int total = 0;
+        for (int i = 0; i < 200; ++i) {
+            auto [a, b, c, d] = co_await coro::when_all(
+                coro::schedule_on(pool, value(1)), coro::schedule_on(pool, value(2)),
+                coro::schedule_on(pool, value(3)), coro::schedule_on(pool, value(4)));
+            total += a + b + c + d;
+        }
+        co_return total;
+    };
+
+    EXPECT_EQ(coro::sync_wait(body()), 200 * 10);
+}
+
+// A group named before it is awaited: the task temporaries it was built from
+// are gone by the time the co_await runs, so the group must have taken them
+// over at construction rather than borrowed them by reference.
+TEST(when_all_t, NamedGroupOwnsItsRvalueChildren) {
+    auto body = []() -> coro::task<int> {
+        auto group = coro::when_all(value(1), value(2));
+        auto [a, b] = co_await group;
+        co_return a + b;
+    };
+
+    EXPECT_EQ(coro::sync_wait(body()), 3);
 }

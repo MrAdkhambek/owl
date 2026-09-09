@@ -16,6 +16,12 @@ namespace coro {
     // destroying it joins that thread (see timed_wait_queue). Awaiters
     // capture a raw pointer to the private queue, so the object must
     // not be copied around while coroutines are parked on it.
+    //
+    // Destroy it only once nothing is parked on it. Whatever still is
+    // gets woken early by the destructor, and if it then sleeps again
+    // the co_await throws std::logic_error rather than parking on a
+    // queue that is going away -- the way a periodic loop parked here
+    // gets to end.
     class timer_scheduler {
     public:
         using clock = detail::timed_wait_queue::clock;

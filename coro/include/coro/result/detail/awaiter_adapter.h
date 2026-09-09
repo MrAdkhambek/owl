@@ -4,8 +4,12 @@
 // through: readiness and suspension. Only await_resume differs between
 // them, which is what each derived class supplies.
 //
-// Neither copyable nor movable: it stores the child awaiter by value, and
-// a suspended coroutine holds a pointer into it.
+// Neither copyable nor movable: a suspended coroutine holds a pointer into
+// it. The child awaiter is held under child_storage_t's rule -- a movable
+// rvalue is moved in, an lvalue or a non-movable rvalue is borrowed -- so
+// `auto t = as_tuple(timer.schedule_after(1ms)); co_await t;` is sound for
+// the timer awaiter, which is movable, and only a non-movable child still
+// has to be awaited in the expression that built the adapter.
 
 #include <coroutine>
 #include <utility>
@@ -15,9 +19,12 @@
 namespace coro::detail {
     // The awaiter the adapter will hold: get_awaiter normalises the
     // three spellings of "awaitable" (member operator co_await, free
-    // one, or an awaiter already) before anything is stored.
+    // one, or an awaiter already) before anything is stored. A task's
+    // operator co_await hands back a fresh awaiter by value, which owns
+    // the frame; a bare awaiter comes back as the reference it was given,
+    // and child_storage_t decides whether that is moved in or borrowed.
     template <typename Aw>
-    using awaiter_storage_t = decltype(get_awaiter(std::declval<Aw>()));
+    using awaiter_storage_t = child_storage_t<decltype(get_awaiter(std::declval<Aw>()))>;
 
     template <typename Aw>
     class awaiter_adapter {

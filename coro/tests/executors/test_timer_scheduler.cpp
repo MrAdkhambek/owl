@@ -7,6 +7,7 @@
 #include <exception>
 #include <gtest/gtest.h>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 #include <utility>
 
@@ -349,5 +350,78 @@ TEST(TimedWaitQueue, ShutdownDrainsPendingWaiters) {
         queue.enqueue(std::chrono::steady_clock::now() + 2h, std::noop_coroutine());
     }
     EXPECT_EQ(delivered.load(), 2) << "pending waiters were abandoned, not drained";
+#endif
+}
+
+// A continuation the shutdown drain wakes early may try to sleep again -- a
+// periodic loop does exactly that. Letting it back onto the heap would keep
+// the drain going forever, with the loop's body running flat out on the
+// timer thread and the destructor never returning. The second sleep is
+// refused instead.
+//
+// Release-only for the same reason as the test above.
+TEST(TimedWaitQueue, ReenqueueDuringShutdownDrainIsRefused) {
+#ifndef NDEBUG
+    GTEST_SKIP() << "debug asserts abort on the precondition violation this test relies on";
+#else
+    std::atomic<int> delivered{0};
+    std::atomic<int> refused{0};
+    coro::detail::timed_wait_queue* self = nullptr;
+    {
+        coro::detail::timed_wait_queue queue{[&](const std::coroutine_handle<> h) {
+            delivered.fetch_add(1);
+            try {
+                self->enqueue(std::chrono::steady_clock::now() + 1h, h);
+            } catch (const std::logic_error&) {
+                refused.fetch_add(1);
+            }
+        }};
+        self = &queue;
+        queue.enqueue(std::chrono::steady_clock::now() + 1h, std::noop_coroutine());
+    }
+    EXPECT_EQ(delivered.load(), 1);
+    EXPECT_EQ(refused.load(), 1) << "the re-enqueue during shutdown was accepted";
+#endif
+}
+
+// The same seen from a coroutine. A loop parked on a timer_scheduler that is
+// destroyed is woken early by the drain; its next schedule_after has nowhere
+// to park it and throws, which is what ends the loop and lets the timer's
+// destructor return. The loop is driven from another thread because the
+// destructor has to run while it is parked.
+TEST(SleepFor, PeriodicLoopEndsWhenTheTimerIsDestroyed) {
+#ifndef NDEBUG
+    GTEST_SKIP() << "debug asserts abort on the precondition violation this test relies on";
+#else
+    std::atomic<int> ticks{0};
+    std::atomic<bool> parked{false};
+    bool refused = false;
+
+    auto loop = [&](coro::timer_scheduler& timer) -> coro::task<> {
+        for (;;) {
+            parked.store(true);
+            co_await timer.schedule_after(1h);
+            ticks.fetch_add(1);
+        }
+    };
+
+    std::thread driver;
+    {
+        coro::timer_scheduler timer;
+        driver = std::thread([&] {
+            try {
+                coro::sync_wait(loop(timer));
+            } catch (const std::logic_error&) {
+                refused = true;
+            }
+        });
+        while (!parked.load()) std::this_thread::yield();
+        // parked is set before the co_await; give the enqueue itself a moment.
+        std::this_thread::sleep_for(20ms);
+    }
+    driver.join();
+
+    EXPECT_EQ(ticks.load(), 1) << "the drain should wake the loop exactly once";
+    EXPECT_TRUE(refused) << "the loop's next sleep was not refused";
 #endif
 }

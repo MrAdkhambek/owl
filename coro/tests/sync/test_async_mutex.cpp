@@ -369,3 +369,29 @@ TEST(AsyncMutex, ConcurrentTasksSerialiseTheirCriticalSections) {
     EXPECT_TRUE(m.try_lock()) << "mutex left locked after every task finished";
     m.unlock();
 }
+
+// A long queue of waiters, each of which releases the mutex before it
+// suspends again, unwinds on the unlocking thread. It has to unwind as a
+// loop, not as one nested resume per waiter: a secondary thread's stack --
+// 512 KiB on macOS, which is what every pool worker gets -- does not survive
+// thousands of nested unlock/resume/body frames.
+TEST(AsyncMutex, LongWaiterChainUnwindsWithoutRecursing) {
+    coro::async_mutex m;
+    std::vector<int> log;
+    constexpr int waiters = 20000;
+    log.reserve(waiters);
+
+    ASSERT_TRUE(m.try_lock());
+    for (int i = 0; i < waiters; ++i) enter(m, log, i);
+    ASSERT_TRUE(log.empty());
+
+    std::thread([&m] {
+        m.unlock();
+    }).join();
+
+    ASSERT_EQ(log.size(), static_cast<std::size_t>(waiters));
+    EXPECT_EQ(log.front(), 0);
+    EXPECT_EQ(log.back(), waiters - 1);
+    EXPECT_TRUE(m.try_lock()) << "mutex left locked after the chain drained";
+    m.unlock();
+}

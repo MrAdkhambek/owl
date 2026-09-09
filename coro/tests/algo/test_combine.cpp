@@ -105,6 +105,24 @@ TEST(Combine, EmptySourceYieldsNothing) {
     EXPECT_EQ(coro::sync_wait(count_of(coro::combine(seq({1, 2, 3}), seq({})))), 0u);
 }
 
+// The terminating step pulls both sides at once, so by the time one side is
+// known to be dry the other's next element has already been produced -- and
+// is dropped. That is the price of pulling concurrently. combine owns both
+// sources, so the element itself is unobservable; a side effect of producing
+// it (a counter here, a socket read in life) is not undone.
+TEST(Combine, TerminatingStepPullsOneSurplusElement) {
+    int produced = 0;
+    auto counting = [&produced](const int n) -> coro::async_generator<int> {
+        for (int i = 0; i < n; ++i) {
+            ++produced;
+            co_yield i;
+        }
+    };
+
+    EXPECT_EQ(coro::sync_wait(count_of(coro::combine(seq({1}), counting(5)))), 1u);
+    EXPECT_EQ(produced, 2) << "one paired, one surplus";
+}
+
 // Building the pipeline must not start either body. Only the first pull does.
 TEST(Combine, BuildingStartsNoBody) {
     bodies = 0;

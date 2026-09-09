@@ -14,6 +14,12 @@
 // Tear down only when nothing is parked. Destruction does resume
 // stragglers with wait_status::cancelled as a last resort, but a
 // coroutine resumed that way must not touch the reactor again.
+//
+// One waiter per descriptor per direction at a time: registrations are
+// keyed by (fd, filter), so a second read wait on an fd that already
+// has one replaces it in the kernel and the first never completes. A
+// read wait and a write wait on the same fd are fine, and each
+// completes without disturbing the other.
 
 #include <cerrno>
 #include <chrono>
@@ -173,21 +179,54 @@ namespace coro {
                 continuation.resume();
             }
 
-            // Removes whatever was registered for this request. Safe to
-            // call more than once: deleting a non-existent kqueue event
-            // or epoll registration is not an error.
+#if CORO_REACTOR_KQUEUE
+            // Submits a changelist and reports whether every change took.
+            // Each change carries EV_RECEIPT, and the eventlist has one
+            // slot per change: the kernel then answers every change with
+            // a receipt -- EV_ERROR set, data holding errno or zero --
+            // and keeps processing past a failed one. Without the slots
+            // it would stop at the first failure and report -1, leaving
+            // the changes after it unapplied; that is how a failed fd
+            // registration used to leave its timer unarmed, and a
+            // oneshot filter that had already fired used to leave the
+            // timer deleted after it still ticking.
+            [[nodiscard]] bool apply(struct kevent* changes, const int n) const {
+                if (n == 0) return true;
+                struct kevent receipts[3]{};
+                const int got = ::kevent(kq, changes, n, receipts, n, nullptr);
+                if (got < 0) return false;
+                bool ok = true;
+                for (int i = 0; i < got; ++i) {
+                    if ((receipts[i].flags & EV_ERROR) && receipts[i].data != 0) ok = false;
+                }
+                return ok;
+            }
+#endif
+
+            // Removes what arm() registered for this request -- only
+            // that: another request may hold the other direction's
+            // filter on the same fd, and it must survive this. Safe to
+            // call more than once, and after a oneshot has fired: a
+            // missing registration is simply reported in its receipt
+            // and the deletes after it still go through.
             void disarm(request* req) const {
 #if CORO_REACTOR_KQUEUE
                 struct kevent ev[3]{};
                 int n = 0;
                 if (req->fd >= 0) {
-                    EV_SET(&ev[n++], req->fd, EVFILT_READ, EV_DELETE, 0, 0, nullptr);
-                    EV_SET(&ev[n++], req->fd, EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
+                    if (req->want != interest::write) {
+                        EV_SET(&ev[n++], req->fd, EVFILT_READ, EV_DELETE | EV_RECEIPT, 0, 0, nullptr);
+                    }
+                    if (req->want != interest::read) {
+                        EV_SET(&ev[n++], req->fd, EVFILT_WRITE, EV_DELETE | EV_RECEIPT, 0, 0, nullptr);
+                    }
                 }
                 // The timer is keyed by the request's own address, so it
                 // can be found and deleted without extra state.
-                EV_SET(&ev[n++], reinterpret_cast<uintptr_t>(req), EVFILT_TIMER, EV_DELETE, 0, 0, nullptr);
-                ::kevent(kq, ev, n, nullptr, 0, nullptr);
+                if (req->timeout.count() >= 0) {
+                    EV_SET(&ev[n++], reinterpret_cast<uintptr_t>(req), EVFILT_TIMER, EV_DELETE | EV_RECEIPT, 0, 0, nullptr);
+                }
+                static_cast<void>(apply(ev, n));
 #elif CORO_REACTOR_EPOLL
                 if (req->fd >= 0) ::epoll_ctl(epfd, EPOLL_CTL_DEL, req->fd, nullptr);
                 if (req->timer_fd >= 0) {
@@ -202,50 +241,58 @@ namespace coro {
             // registrations are ONESHOT: they fire at most once, which
             // is what lets completion be "disarm what is left" instead
             // of reference counting.
-            void arm(request* req) const {
+            //
+            // False when the kernel refused any of it -- a closed fd
+            // (EBADF), an fd that already carries this direction on
+            // epoll (EEXIST), no timerfd to be had. The caller turns
+            // that into wait_status::error; ignoring it would leave the
+            // request in `inflight` with nothing armed to ever complete
+            // it, parked for good.
+            [[nodiscard]] bool arm(request* req) const {
 #if CORO_REACTOR_KQUEUE
                 struct kevent ev[3]{};
                 int n = 0;
                 if (req->fd >= 0) {
                     if (req->want != interest::write) {
-                        EV_SET(&ev[n++], req->fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, req);
+                        EV_SET(&ev[n++], req->fd, EVFILT_READ, EV_ADD | EV_ONESHOT | EV_RECEIPT, 0, 0, req);
                     }
                     if (req->want != interest::read) {
-                        EV_SET(&ev[n++], req->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, req);
+                        EV_SET(&ev[n++], req->fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT | EV_RECEIPT, 0, 0, req);
                     }
                 }
                 if (req->timeout.count() >= 0) {
-                    EV_SET(&ev[n++], reinterpret_cast<uintptr_t>(req), EVFILT_TIMER, EV_ADD | EV_ONESHOT, 0,
+                    EV_SET(&ev[n++], reinterpret_cast<uintptr_t>(req), EVFILT_TIMER, EV_ADD | EV_ONESHOT | EV_RECEIPT, 0,
                            static_cast<intptr_t>(req->timeout.count()), req);
                 }
-                if (n > 0) ::kevent(kq, ev, n, nullptr, 0, nullptr);
+                return apply(ev, n);
 #elif CORO_REACTOR_EPOLL
+                bool ok = true;
                 if (req->fd >= 0) {
                     epoll_event ev{};
                     ev.events = EPOLLET | EPOLLONESHOT;
                     if (req->want != interest::write) ev.events |= EPOLLIN;
                     if (req->want != interest::read) ev.events |= EPOLLOUT;
                     ev.data.ptr = req;
-                    ::epoll_ctl(epfd, EPOLL_CTL_ADD, req->fd, &ev);
+                    ok = ::epoll_ctl(epfd, EPOLL_CTL_ADD, req->fd, &ev) == 0;
                 }
                 if (req->timeout.count() >= 0) {
                     req->timer_fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK);
-                    if (req->timer_fd >= 0) {
-                        itimerspec spec{};
-                        spec.it_value.tv_sec = req->timeout.count() / 1000;
-                        spec.it_value.tv_nsec = (req->timeout.count() % 1000) * 1'000'000L;
-                        // timerfd rejects an all-zero expiry; the smallest
-                        // legal nudge stands in for "fire now".
-                        if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0) {
-                            spec.it_value.tv_nsec = 1;
-                        }
-                        ::timerfd_settime(req->timer_fd, 0, &spec, nullptr);
-                        epoll_event ev{};
-                        ev.events = EPOLLIN | EPOLLONESHOT;
-                        ev.data.ptr = req;
-                        ::epoll_ctl(epfd, EPOLL_CTL_ADD, req->timer_fd, &ev);
+                    if (req->timer_fd < 0) return false;
+                    itimerspec spec{};
+                    spec.it_value.tv_sec = req->timeout.count() / 1000;
+                    spec.it_value.tv_nsec = (req->timeout.count() % 1000) * 1'000'000L;
+                    // timerfd rejects an all-zero expiry; the smallest
+                    // legal nudge stands in for "fire now".
+                    if (spec.it_value.tv_sec == 0 && spec.it_value.tv_nsec == 0) {
+                        spec.it_value.tv_nsec = 1;
                     }
+                    if (::timerfd_settime(req->timer_fd, 0, &spec, nullptr) != 0) return false;
+                    epoll_event ev{};
+                    ev.events = EPOLLIN | EPOLLONESHOT;
+                    ev.data.ptr = req;
+                    if (::epoll_ctl(epfd, EPOLL_CTL_ADD, req->timer_fd, &ev) != 0) return false;
                 }
+                return ok;
 #endif
             }
 
@@ -257,9 +304,15 @@ namespace coro {
                 for (;;) {
                     std::vector<request*> batch;
                     std::vector<request*> cancel;
+                    // stopping is written by the destructor under the
+                    // mutex, so it is read under the mutex too and
+                    // carried out as a local; the branch below runs
+                    // unlocked.
+                    bool stop = false;
                     {
                         const std::lock_guard lock(mutex);
-                        if (stopping) {
+                        stop = stopping;
+                        if (stop) {
                             cancel.swap(pending);
                             cancel.insert(cancel.end(), inflight.begin(), inflight.end());
                             inflight.clear();
@@ -268,7 +321,7 @@ namespace coro {
                             for (request* req : batch) inflight.insert(req);
                         }
                     }
-                    if (stopping) {
+                    if (stop) {
                         for (request* req : cancel) {
                             disarm(req);
                             req->status = wait_status::cancelled;
@@ -276,7 +329,12 @@ namespace coro {
                         }
                         return;
                     }
-                    for (request* req : batch) arm(req);
+                    // A refused registration completes right here, on
+                    // the reactor thread, the same way a fired event
+                    // would: the coroutine learns of it as data.
+                    for (request* req : batch) {
+                        if (!arm(req)) complete(req, wait_status::error);
+                    }
 
 #if CORO_REACTOR_KQUEUE
                     struct kevent ev{};
@@ -309,7 +367,15 @@ namespace coro {
                         std::uint64_t exp{};
                         if (::read(req->timer_fd, &exp, sizeof(exp)) > 0) st = wait_status::timeout;
                     }
-                    if (ev.events & (EPOLLERR | EPOLLHUP)) st = wait_status::error;
+                    // Only a genuine error is an error. EPOLLHUP is a
+                    // readiness condition -- the read will return EOF, the
+                    // write will fail at once, neither will block -- and
+                    // the kernel reports it whether asked or not, alongside
+                    // EPOLLIN while data is still buffered on a half-closed
+                    // socket. Calling that an error would leave those bytes
+                    // unread; kqueue reports the same state as EV_EOF on a
+                    // ready event, and the two backends should agree.
+                    if (ev.events & EPOLLERR) st = wait_status::error;
                     complete(req, st);
 #endif
                 }
@@ -354,7 +420,9 @@ namespace coro {
 
         // Parks until fd is ready for the wanted interest, the timeout
         // expires, or something errors. timeout < 0 means wait forever.
-        // An invalid fd reports error without parking.
+        // A negative fd reports error without parking; one the kernel
+        // refuses to register (closed, say) reports error from the
+        // reactor thread, after the hop.
         [[nodiscard]] task<wait_status> wait(
             const int fd, const interest want, const std::chrono::milliseconds timeout) {
             if (fd < 0) co_return wait_status::error;

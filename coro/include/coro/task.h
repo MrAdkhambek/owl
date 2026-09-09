@@ -233,10 +233,19 @@ namespace coro {
         }
 
         // Drives the task to completion on the current thread. Only valid when
-        // nothing in the chain suspends on external work.
+        // nothing in the chain suspends on external work: one resume() is all
+        // the driving get() can do, so a body that parks on a timer, a pool
+        // or a reactor is still parked when resume() returns. That is
+        // reported as what it is -- take() would otherwise call it "finished
+        // without a result" for a value task and say nothing at all for a
+        // void one, and either way this task's destructor would then free a
+        // frame the executor still holds.
         T get() && {
-            if (h_ && !h_.done()) h_.resume();
             if (!h_) throw std::logic_error("get() on an empty task");
+            if (!h_.done()) h_.resume();
+            if (!h_.done()) {
+                throw std::logic_error("get() on a task that suspended on external work; drive it with sync_wait or an executor instead");
+            }
             return h_.promise().take();
         }
 

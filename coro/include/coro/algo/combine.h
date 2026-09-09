@@ -3,8 +3,15 @@
 // Element-wise pairing of two async generators -- the coroutine analogue of
 // zip. A step pulls one element from each side at once and yields the pair,
 // stopping when the shorter side runs out, so it yields
-// min(len(left), len(right)) pairs. Both sides run lazily and in parallel,
-// and the longer side's surplus is simply never pulled.
+// min(len(left), len(right)) pairs. Both sides run lazily and in parallel.
+//
+// Pulling in parallel has one consequence at the end: the step that finds
+// one side dry has already asked the other side for its next element, so
+// the longer side is pulled once more than it is used and that element is
+// dropped. combine owns both sources, so nothing else could have consumed
+// it -- but a side effect of producing it (a read from a socket, say) has
+// happened. Pulling sequentially would avoid that at the cost of the
+// parallelism, which is the whole point.
 //
 //   auto pairs = combine(std::move(keys), std::move(values));
 //   // async_generator<std::tuple<K, V>>: (k1, v1), (k2, v2), ...
@@ -37,7 +44,8 @@ namespace coro {
 
     // Pairs the two generators element by element (zip). Each step co_awaits
     // both sides at once -- see wait_all -- and yields (left, right) while
-    // both still have an element; the first exhausted side ends the stream.
+    // both still have an element; the first exhausted side ends the stream,
+    // and the other side's element from that final step is discarded.
     //
     //   auto keys   = ...;   // async_generator<std::string>
     //   auto values = ...;   // async_generator<int>

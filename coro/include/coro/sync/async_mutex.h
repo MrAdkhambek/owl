@@ -17,6 +17,34 @@
 #include <utility>
 
 namespace coro {
+    class async_mutex;
+
+    namespace detail {
+        // The unlock() that is currently handing a mutex down its waiter
+        // queue on this thread, if any. A waiter resumed inline by that
+        // unlock() usually releases the mutex before it suspends again;
+        // its own unlock() must not resume the next waiter from there --
+        // that would nest one unlock/resume/body triple per queued
+        // waiter, and a pool worker's stack holds only a few thousand of
+        // those. It sets handoff_pending instead, and the outer loop
+        // resumes the next waiter after the nested one returns.
+        //
+        // Thread-local, not a member: the resumed waiter may keep the
+        // lock, suspend, and unlock later from another thread while this
+        // loop is still unwinding. State inside the mutex would then be
+        // read from both threads at once; state on this thread's stack,
+        // reached only through this thread's pointer, cannot be.
+        struct mutex_drain {
+            const async_mutex* mutex;
+            bool handoff_pending;
+        };
+
+        inline mutex_drain*& active_mutex_drain() noexcept {
+            thread_local mutex_drain* active = nullptr;
+            return active;
+        }
+    }
+
     // Tag for building an async_mutex_lock around a mutex that is
     // already held -- the guard adopts rather than acquires.
     struct adopt_lock_t {
@@ -24,8 +52,6 @@ namespace coro {
     };
 
     inline constexpr adopt_lock_t adopt_lock{};
-
-    class async_mutex;
 
     // RAII guard over one held async_mutex. Destruction unlocks;
     // moving transfers the obligation (move-assignment first releases
@@ -178,9 +204,48 @@ namespace coro {
         // on this thread, and owns the lock from the moment it wakes --
         // which is why waiters acquire in FIFO order and why state_
         // stays "held" across the handoff.
+        //
+        // The handoffs run as a loop here, however many waiters release
+        // in turn: a waiter that unlocks while this loop is resuming it
+        // is a nested call (see mutex_drain) and defers to this loop
+        // rather than resuming the next waiter itself. The loop ends
+        // when a resumed waiter is still holding the lock on return --
+        // it suspended with it -- because from then on that waiter's own
+        // unlock(), wherever it runs, is the one that continues the
+        // queue.
         void unlock() noexcept {
             assert(state_.load(std::memory_order_relaxed) != not_locked() && "async_mutex::unlock() on a mutex that is not held");
 
+            detail::mutex_drain*& active = detail::active_mutex_drain();
+            if (active != nullptr && active->mutex == this) {
+                active->handoff_pending = true;
+                return;
+            }
+
+            // `enclosing` is a drain of some OTHER mutex whose waiter
+            // this call is running inside; it is restored on the way out
+            // so that waiter's own nested unlock still finds it.
+            detail::mutex_drain* const enclosing = active;
+            detail::mutex_drain drain{.mutex = this, .handoff_pending = false};
+            active = &drain;
+            for (;;) {
+                lock_operation* const next = next_owner();
+                if (next == nullptr) break;
+                drain.handoff_pending = false;
+                next->continuation_.resume();
+                if (!drain.handoff_pending) break;
+            }
+            active = enclosing;
+        }
+
+    private:
+        friend class lock_operation;
+
+        // Pops the next owner off the FIFO, first absorbing any waiters
+        // that arrived on state_ since the FIFO was last filled. Returns
+        // nullptr when nobody was waiting, having released the mutex
+        // outright.
+        lock_operation* next_owner() noexcept {
             lock_operation* head = waiters_;
             if (head == nullptr) {
                 void* expected = nullptr;
@@ -189,7 +254,7 @@ namespace coro {
                     not_locked(),
                     std::memory_order_release,
                     std::memory_order_relaxed)) {
-                    return;
+                    return nullptr;
                 }
 
                 // A waiter landed on state_ in that window: take the
@@ -208,11 +273,8 @@ namespace coro {
             }
 
             waiters_ = head->next_;
-            head->continuation_.resume();
+            return head;
         }
-
-    private:
-        friend class lock_operation;
 
         // The "free" sentinel is this mutex's own address: valid, and
         // distinct from every pointer a waiter node could occupy.

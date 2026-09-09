@@ -1,11 +1,15 @@
+#include <chrono>
 #include <gtest/gtest.h>
 #include <stdexcept>
 #include <string>
 #include <tuple>
 
+#include <coro/executors/timer_scheduler.h>
 #include <coro/result/as_tuple.h>
 #include <coro/run/sync_wait.h>
 #include <coro/task.h>
+
+using namespace std::chrono_literals;
 
 namespace {
     coro::task<int> value(const int n) { co_return n; }
@@ -61,4 +65,19 @@ TEST(as_tuple_t, ErrorSlotCarriesTheOriginalException) {
     };
 
     EXPECT_EQ(coro::sync_wait(body()), "boom");
+}
+
+// An adapter named before it is awaited: the timer awaiter it wrapped was a
+// temporary that died at the end of that statement, so the adapter must hold
+// its own copy of a movable child rather than a reference into a dead one.
+TEST(as_tuple_t, NamedAdapterOwnsItsRvalueAwaiter) {
+    coro::timer_scheduler timer;
+
+    auto body = [&timer]() -> coro::task<bool> {
+        auto adapted = coro::as_tuple(timer.schedule_after(1ms));
+        auto [err] = co_await adapted;
+        co_return err == nullptr;
+    };
+
+    EXPECT_TRUE(coro::sync_wait(body()));
 }

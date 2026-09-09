@@ -24,7 +24,13 @@ namespace coro {
     // Parks the caller on sched.schedule(), then runs t to completion
     // inline. t is moved into the wrapper's frame -- after that the
     // wrapper owns it and the caller must not await it again.
-    template <typename SCHEDULER, typename T> requires scheduler<std::remove_cv_t<std::remove_reference_t<SCHEDULER>>>
+    //
+    // Constrained on SCHEDULER as deduced -- `const pool` for a const
+    // argument -- not on a cv-stripped copy of it. schedule() is not const,
+    // so stripping the const would admit a const scheduler at the signature
+    // and only reject it inside the body, where a caller's own
+    // requires-clause cannot see the failure.
+    template <typename SCHEDULER, typename T> requires scheduler<SCHEDULER>
     [[nodiscard]] auto schedule_on(SCHEDULER& sched, task<T> t) -> task<T> {
         co_await sched.schedule();
         if constexpr (std::is_void_v<T>) {

@@ -1,12 +1,14 @@
 #pragma once
 
-// The engine behind the borrow-based combinators: where one child's outcome
-// lands (slot), the coroutine that drives exactly one child and reports back
+// The engine behind when_all and when_any: where one child's outcome lands
+// (slot), the coroutine that drives exactly one child and reports back
 // (leaf), and its body (run_child). Private to when_all.h and when_any.h,
-// which are its only callers.
+// which are its only callers; each decides for itself how a child is held
+// (see child_storage_t and run_child's Stored parameter).
 
 #include <coroutine>
 #include <exception>
+#include <memory>
 #include <optional>
 #include <type_traits>
 #include <utility>
@@ -15,12 +17,32 @@
 
 namespace coro::detail {
     // Where one child's outcome lands. Owned by the combinator, not by the
-    // coroutine that fills it -- when_any destroys the losing children, and
-    // a result stored in a destroyed frame would go with them.
+    // coroutine that fills it, so the result outlives the driver that
+    // produced it. A reference result is kept as a pointer, as task's own
+    // result_slot does: std::optional cannot hold a reference.
     template <typename T>
     struct slot {
-        std::optional<T> value;
+        using stored = std::conditional_t<std::is_reference_v<T>, std::remove_reference_t<T>*, T>;
+
+        std::optional<stored> value;
         std::exception_ptr error;
+
+        template <typename From>
+        void set(From&& from) {
+            if constexpr (std::is_reference_v<T>) value.emplace(std::addressof(from));
+            else value.emplace(std::forward<From>(from));
+        }
+
+        void set() {
+            value.emplace();
+        }
+
+        // Moves the result out (or re-forms the reference); only valid once
+        // the child has completed without error.
+        T take() {
+            if constexpr (std::is_reference_v<T>) return static_cast<T>(**value);
+            else return std::move(*value);
+        }
     };
 
     // Drives exactly one child, and tells the combinator when it is done.
@@ -123,19 +145,25 @@ namespace coro::detail {
         std::coroutine_handle<promise_type> handle_;
     };
 
-    // The body of a leaf. Free rather than a member because a coroutine
-    // taking the awaitable by forwarding reference is what lets a
-    // non-movable awaiter -- sleep_for, above all -- be combined at all:
-    // the frame stores the reference, and the referent stays where the
-    // caller put it.
-    template <typename State, typename T, typename Aw>
-    leaf<State> run_child(slot<T>& slot, Aw&& awaitable) {
+    // The body of a leaf. Stored names how the frame keeps the child --
+    // the combinator picks it with child_storage_t: by value for a movable
+    // rvalue, so the child lives exactly as long as the leaf; by reference
+    // for an lvalue or a non-movable rvalue, which stays where the caller
+    // put it. Spelled as an explicit template argument rather than deduced,
+    // because a by-value parameter deduced from a forwarding reference
+    // would copy every lvalue.
+    //
+    // The cast re-forms the reference category Stored implies -- an rvalue
+    // for an owned child, so a task's &&-qualified operator co_await can be
+    // reached -- and collapses to an lvalue for a borrowed one.
+    template <typename State, typename Stored, typename T>
+    leaf<State> run_child(slot<T>& slot, Stored awaitable) {
         try {
-            if constexpr (std::is_void_v<await_result_t<Aw>>) {
-                co_await std::forward<Aw>(awaitable);
-                slot.value.emplace();
+            if constexpr (std::is_void_v<await_result_t<Stored>>) {
+                co_await static_cast<Stored&&>(awaitable);
+                slot.set();
             } else {
-                slot.value.emplace(co_await std::forward<Aw>(awaitable));
+                slot.set(co_await static_cast<Stored&&>(awaitable));
             }
         } catch (...) {
             slot.error = std::current_exception();

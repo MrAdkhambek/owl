@@ -62,11 +62,12 @@ TEST(WaitAll, ResultsInArgumentOrder) {
 
 // void bodies occupy their tuple slot with the void_value placeholder, so the
 // result layout does not depend on which bodies happened to produce values.
+// It is the library's one void_value -- the same type when_all and when_any
+// report -- not a private look-alike.
 TEST(WaitAll, VoidAndValuedChildrenMix) {
-    using coro::detail::void_value;
     auto [x, y] = coro::sync_wait(
         coro::wait_all(quiet(), val(7)));
-    static_assert(std::is_same_v<decltype(x), void_value>);
+    static_assert(std::is_same_v<decltype(x), coro::void_value>);
     static_assert(std::is_same_v<decltype(y), int>);
     EXPECT_EQ(y, 7);
 }
@@ -104,6 +105,17 @@ TEST(WaitAll, LaterFailureStillSurfaces) {
 // argument overall, which succeeded here.
 TEST(WaitAll, EarliestFailingArgumentWins) {
     EXPECT_EQ(failure_of(val(1), boom("second"), boom("third")), "second");
+}
+
+// A task<T&> child contributes a reference, not a copy: the tuple element
+// aliases the slot the body co_returned.
+TEST(WaitAll, ReferenceResultsAliasTheirSource) {
+    int left = 1;
+    int right = 2;
+    auto [a, b] = coro::sync_wait(coro::wait_all(give_ref(left), give_ref(right)));
+    static_assert(std::is_same_v<decltype(a), int&>);
+    EXPECT_EQ(&a, &left);
+    EXPECT_EQ(&b, &right);
 }
 
 // No children at all: completes immediately with an empty tuple.

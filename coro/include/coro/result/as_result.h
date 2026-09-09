@@ -91,8 +91,12 @@ namespace coro {
         return {};
     }
 
-    template <typename T>
-    [[nodiscard]] auto operator|(task<T>&& t, as_result_transform) -> decltype(as_result(std::move(t))) {
-        return as_result(std::move(t));
+    // Forwards to the call form, so the same partial ordering routes a task
+    // to the frame-allocating overload and any other awaitable to the
+    // adapter. Constrained to awaitables, and matched only against the
+    // transform on the right, so it never competes with another pipe.
+    template <awaitable Aw>
+    [[nodiscard]] auto operator|(Aw&& awaitable, as_result_transform) -> decltype(as_result(std::forward<Aw>(awaitable))) {
+        return as_result(std::forward<Aw>(awaitable));
     }
 }

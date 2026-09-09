@@ -15,10 +15,12 @@
 // join is a plain alias for when_all (same for the range form).
 
 #include <array>
+#include <atomic>
 #include <coroutine>
 #include <cstddef>
 #include <exception>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -29,16 +31,36 @@ namespace coro {
     namespace detail {
         // Shared bookkeeping for when_all: who to wake once every child is
         // done, and how many are still pending. remaining starts at
-        // children + 1 because the parent's own check counts as an arrival.
+        // children + 1 because the parent's own check counts as an arrival,
+        // and the last arrival -- child or parent -- is the one that
+        // continues the parent.
+        //
+        // The count is atomic because children finish wherever their work
+        // ran: two pool workers, or a worker and the timer thread, can
+        // arrive at the same instant as each other and as the parent's own
+        // check. acq_rel on every decrement is what lets the arrival that
+        // reaches zero see every other child's slot as written.
         struct all_state {
             std::coroutine_handle<> parent;
-            std::size_t remaining = 0;
+            std::atomic<std::size_t> remaining{0};
+
+            void begin(const std::coroutine_handle<> waiting, const std::size_t children) noexcept {
+                parent = waiting;
+                remaining.store(children + 1, std::memory_order_release);
+            }
 
             // One child is done: hand control to the parent if this was the
-            // last one, otherwise to nothing.
+            // last arrival, otherwise to nothing.
             [[nodiscard]] std::coroutine_handle<> child_finished(std::size_t) noexcept {
-                if (--remaining == 0) return parent;
+                if (remaining.fetch_sub(1, std::memory_order_acq_rel) == 1) return parent;
                 return std::noop_coroutine();
+            }
+
+            // The parent's own arrival, after it has started every child.
+            // True when children are still running and the parent must
+            // stay suspended; false when it was the last arrival itself.
+            [[nodiscard]] bool parent_waits() noexcept {
+                return remaining.fetch_sub(1, std::memory_order_acq_rel) != 1;
             }
         };
     }
@@ -58,10 +80,11 @@ namespace coro {
         when_all_t(when_all_t&&) = delete;
         when_all_t& operator=(when_all_t&&) = delete;
         // Neither copyable nor movable because the parts reference each
-        // other by address: leaves point into slots_ and state_, and
-        // the children are borrowed in place. Relocating the group
-        // would strand every pointer, so the group must be awaited
-        // exactly where it was created.
+        // other by address: leaves point into slots_ and state_.
+        // Relocating the group would strand every pointer. Naming it is
+        // fine -- guaranteed elision builds it in place, and it owns its
+        // rvalue children (see child_storage_t) -- as long as it is then
+        // awaited where it sits.
 
         // Ready immediately only in the degenerate case of zero awaitables.
         [[nodiscard]] bool await_ready() const noexcept {
@@ -71,11 +94,9 @@ namespace coro {
         // Starts every child, then counts itself as an arrival; suspends until
         // the final child (or its own check) drives the remaining count to zero.
         bool await_suspend(const std::coroutine_handle<> parent) {
-            state_.parent = parent;
-            state_.remaining = sizeof...(Aws) + 1;
+            state_.begin(parent, sizeof...(Aws));
             for (auto& leaf : leaves_) leaf.start();
-
-            return --state_.remaining != 0;
+            return state_.parent_waits();
         }
 
         // All children have finished: if any threw, rethrow the first error;
@@ -88,7 +109,7 @@ namespace coro {
             if (first) std::rethrow_exception(first);
 
             return std::apply([](auto&... slot) {
-                return std::tuple<await_value_t<Aws>...>{std::move(*slot.value)...};
+                return std::tuple<await_value_t<Aws>...>{slot.take()...};
             }, slots_);
         }
 
@@ -102,7 +123,8 @@ namespace coro {
         // result into the matching slot and reporting back to all_state.
         template <std::size_t I, typename Aw>
         detail::leaf<detail::all_state> bound(Aw&& awaitable) {
-            auto leaf = detail::run_child<detail::all_state>(std::get<I>(slots_), std::forward<Aw>(awaitable));
+            auto leaf = detail::run_child<detail::all_state, detail::child_storage_t<Aw>>(
+                std::get<I>(slots_), std::forward<Aw>(awaitable));
             leaf.bind(&state_, I);
             return leaf;
         }
@@ -122,19 +144,24 @@ namespace coro {
     }
 
     // Range form of when_all for a dynamic vector of a single awaitable type;
-    // co_await yields a vector of results in the same order.
+    // co_await yields a vector of results in the same order. Each element
+    // is moved out of the vector into its own driver, which is why the
+    // element type has to be movable: there is no caller-side object left
+    // to borrow from once the vector has been handed over.
     template <awaitable Aw>
     class [[nodiscard]] when_all_range {
+        static_assert(std::is_move_constructible_v<Aw>,
+                      "when_all over a range moves each awaitable into its own driver; "
+                      "a non-movable awaitable needs the variadic form, awaited in the expression that built it");
+
     public:
         using Value = await_value_t<Aw>;
 
-        explicit when_all_range(std::vector<Aw> awaitables)
-            : awaitables_(std::move(awaitables)) {
-            slots_.resize(awaitables_.size());
-            leaves_.reserve(awaitables_.size());
-            for (std::size_t i = 0; i < awaitables_.size(); ++i) {
-                leaves_.push_back(detail::run_child<detail::all_state>(
-                    slots_[i], std::move(awaitables_[i])));
+        explicit when_all_range(std::vector<Aw> awaitables) {
+            slots_.resize(awaitables.size());
+            leaves_.reserve(awaitables.size());
+            for (std::size_t i = 0; i < awaitables.size(); ++i) {
+                leaves_.push_back(detail::run_child<detail::all_state, Aw>(slots_[i], std::move(awaitables[i])));
                 leaves_.back().bind(&state_, i);
             }
         }
@@ -149,10 +176,9 @@ namespace coro {
         }
 
         bool await_suspend(const std::coroutine_handle<> parent) {
-            state_.parent = parent;
-            state_.remaining = leaves_.size() + 1;
+            state_.begin(parent, leaves_.size());
             for (auto& leaf : leaves_) leaf.start();
-            return --state_.remaining != 0;
+            return state_.parent_waits();
         }
 
         std::vector<Value> await_resume() {
@@ -160,13 +186,12 @@ namespace coro {
 
             std::vector<Value> results;
             results.reserve(slots_.size());
-            for (auto& slot : slots_) results.push_back(std::move(*slot.value));
+            for (auto& slot : slots_) results.push_back(slot.take());
             return results;
         }
 
     private:
         detail::all_state state_;
-        std::vector<Aw> awaitables_;
         std::vector<detail::slot<Value>> slots_;
         std::vector<detail::leaf<detail::all_state>> leaves_;
     };

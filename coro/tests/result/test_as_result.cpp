@@ -183,3 +183,20 @@ TEST(as_result_t, AwaitableOverloadCapturesThrow) {
 
     EXPECT_FALSE(coro::sync_wait(body()));
 }
+
+// The pipe form dispatches per argument exactly like the call form: a bare
+// awaiter goes through the zero-frame adapter rather than failing to compile.
+TEST(as_result_t, PipeFormAcceptsABareAwaiter) {
+    struct ready_awaiter {
+        [[nodiscard]] bool await_ready() const noexcept { return true; }
+        void await_suspend(std::coroutine_handle<>) const noexcept {}
+        [[nodiscard]] int await_resume() const noexcept { return 7; }
+    };
+
+    auto body = []() -> coro::task<int> {
+        auto r = co_await (ready_awaiter{} | coro::as_result());
+        co_return r.value();
+    };
+
+    EXPECT_EQ(coro::sync_wait(body()), 7);
+}

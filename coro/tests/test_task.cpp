@@ -1,5 +1,7 @@
+#include <coroutine>
 #include <gtest/gtest.h>
 #include <stdexcept>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
@@ -48,6 +50,17 @@ namespace {
     coro::task<> await_empty_task() {
         coro::task<> gone{};
         static_cast<void>(co_await std::move(gone));
+    }
+
+    // Suspends on something nothing will ever resume: the one thing get()
+    // cannot drive through.
+    coro::task<int> parks_then_returns() {
+        co_await std::suspend_always{};
+        co_return 1;
+    }
+
+    coro::task<> parks_void() {
+        co_await std::suspend_always{};
     }
 }
 
@@ -118,4 +131,21 @@ TEST(Task, ReferenceResultRejectsTemporaries) {
     static_assert(!can_co_return<int&, int>,
                   "likewise for a non-const reference result");
     SUCCEED();
+}
+
+// get() drives the body on the calling thread, so it can only finish a body
+// that never suspends on external work. One that does suspend is reported as
+// exactly that -- not as "finished without a result", which describes a
+// different bug, and not as success.
+TEST(Task, GetOnASuspendedBodyReportsTheSuspension) {
+    try {
+        static_cast<void>(parks_then_returns().get());
+        FAIL() << "get() returned from a body that never finished";
+    } catch (const std::logic_error& e) {
+        EXPECT_NE(std::string_view{e.what()}.find("suspended"), std::string_view::npos) << e.what();
+    }
+}
+
+TEST(Task, VoidGetOnASuspendedBodyThrows) {
+    EXPECT_THROW(parks_void().get(), std::logic_error);
 }

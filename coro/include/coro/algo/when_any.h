@@ -18,13 +18,32 @@
 //
 // A void task still occupies an alternative in the variant (a void_value
 // token), so you can always tell which awaitable won.
+//
+// There is no cancellation, so the children that lose keep running: a timer
+// that lost stays parked until it fires, a task on a pool runs to its end,
+// and their results are dropped. The losers' frames and result slots
+// therefore live in a shared block on the heap, held by the awaitable and by
+// every child that was started, and freed by whichever of them lets go last.
+// That is what keeps a loser from being destroyed while an executor still
+// holds its handle. The rule it leaves the caller is the same one every
+// parked coroutine already has: the executor a loser is parked on must
+// outlive it.
+//
+// Because losers outlive the expression that built the group, when_any owns
+// every child outright -- an rvalue is moved in, an lvalue is copied. A child
+// that can be neither, such as async_mutex::lock_operation, does not compile
+// here: wrap it in a task first.
 
+#include <array>
+#include <atomic>
+#include <concepts>
 #include <coroutine>
 #include <cstddef>
 #include <exception>
 #include <optional>
 #include <stdexcept>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -38,21 +57,105 @@ namespace coro {
         // still children running.
         inline constexpr std::size_t no_winner = static_cast<std::size_t>(-1);
 
-        // Shared bookkeeping for when_any: who to wake, which child won (if
-        // any), and whether we're still in the starting-up phase.
+        // The part of a when_any that outlives the awaitable: who won, who to
+        // wake, and how many parties still hold the block. The derived block
+        // adds the slots and the leaves. Heap-allocated, and deleted by the
+        // last holder to let go -- the awaitable in its destructor, or the
+        // final child at its own final_suspend.
         struct any_state {
             std::coroutine_handle<> parent;
-            std::size_t winner = no_winner;
-            bool starting = true;
 
-            // A child has finished. If one already won, ignore this one. If we
-            //'re still starting, remember the winner but don't wake yet (the
-            // starter will). Otherwise we're done -- hand control to the parent.
+            // Set once, by the first child to finish; every later child
+            // sees it taken and is a loser.
+            std::atomic<std::size_t> winner{no_winner};
+
+            // Two arrivals decide who continues the parent: its own check
+            // after starting the children, and the winning child. Whichever
+            // comes second does it -- inline for the parent's check, by
+            // symmetric transfer for the child. Losers never touch this.
+            std::atomic<std::size_t> pending{2};
+
+            // The awaitable, plus every child that was STARTED. A child that
+            // was never started -- an earlier sibling won synchronously --
+            // never completes, so it must never be counted.
+            std::atomic<std::size_t> holders{1};
+
+            virtual ~any_state() = default;
+
+            // Called from a leaf's final_suspend. Names who runs next.
+            //
+            // release() may delete the block, and with it the very frame
+            // this call was made from. That is legal at final_suspend -- the
+            // frame is suspended, and nothing of it is touched afterwards --
+            // which is why `next` is decided before the release, and the
+            // caller returns it without looking at its promise again.
             [[nodiscard]] std::coroutine_handle<> child_finished(const std::size_t index) noexcept {
-                if (winner != no_winner) return std::noop_coroutine();
-                winner = index;
-                if (starting) return std::noop_coroutine();
-                return parent;
+                std::coroutine_handle<> next = std::noop_coroutine();
+                std::size_t expected = no_winner;
+                if (winner.compare_exchange_strong(expected, index, std::memory_order_acq_rel)) {
+                    if (pending.fetch_sub(1, std::memory_order_acq_rel) == 1) next = parent;
+                }
+                release();
+                return next;
+            }
+
+            // Starts the children in order, stopping early once one of them
+            // has already won; each started child becomes a holder before it
+            // can possibly finish. Returns whether the parent has to wait.
+            template <typename Leaves>
+            bool start(const std::coroutine_handle<> waiting, Leaves& leaves) {
+                parent = waiting;
+                for (auto& leaf : leaves) {
+                    holders.fetch_add(1, std::memory_order_relaxed);
+                    leaf.start();
+                    if (winner.load(std::memory_order_acquire) != no_winner) break;
+                }
+                return pending.fetch_sub(1, std::memory_order_acq_rel) != 1;
+            }
+
+            // One holder lets go; the last one frees the block.
+            void release() noexcept {
+                if (holders.fetch_sub(1, std::memory_order_acq_rel) == 1) delete this;
+            }
+        };
+
+        // The block behind the variadic form: one slot and one leaf per
+        // child, in argument order. Slots come first so their addresses
+        // exist when the leaves that write into them are built.
+        template <typename... Aws>
+        struct any_block final : any_state {
+            std::tuple<slot<await_value_t<Aws>>...> slots;
+            std::array<leaf<any_state>, sizeof...(Aws)> leaves;
+
+            template <std::size_t... Is>
+            explicit any_block(std::index_sequence<Is...>, Aws&&... awaitables)
+                : leaves{bound<Is>(std::forward<Aws>(awaitables))...} {
+            }
+
+        private:
+            // Every child is owned: stored by value, whatever it was passed
+            // as (see the header comment).
+            template <std::size_t I, typename Aw>
+            leaf<any_state> bound(Aw&& awaitable) {
+                auto driver = run_child<any_state, std::remove_cvref_t<Aw>>(std::get<I>(slots), std::forward<Aw>(awaitable));
+                driver.bind(this, I);
+                return driver;
+            }
+        };
+
+        // The same for the range form, over a vector of one awaitable type.
+        template <typename Aw>
+        struct any_range_block final : any_state {
+            std::vector<slot<await_value_t<Aw>>> slots;
+            std::vector<leaf<any_state>> leaves;
+
+            explicit any_range_block(std::vector<Aw> awaitables) {
+                slots.resize(awaitables.size());
+                leaves.reserve(awaitables.size());
+                for (std::size_t i = 0; i < awaitables.size(); ++i) {
+                    leaves.push_back(run_child<any_state, Aw>(slots[i], std::move(awaitables[i])));
+                    leaves.back().bind(this, i);
+                }
             }
         };
     }
@@ -63,38 +166,40 @@ namespace coro {
     template <typename... Aws>
     class [[nodiscard]] when_any_t {
         static_assert(sizeof...(Aws) > 0, "when_any needs at least one awaitable to wait for");
+        static_assert((std::constructible_from<std::remove_cvref_t<Aws>, Aws&&> && ...),
+                      "when_any owns its children, because a loser outlives the group: pass an rvalue to "
+                      "move in, or a copyable lvalue. A non-movable awaiter (async_mutex::lock_operation, "
+                      "as_result over a bare awaiter) has to be wrapped in a task first");
 
     public:
         // One alternative per awaitable; the winning one is the one set.
         using Variant = std::variant<await_value_t<Aws>...>;
 
         explicit when_any_t(Aws&&... awaitables)
-            : when_any_t(std::index_sequence_for<Aws...>{}, std::forward<Aws>(awaitables)...) {
+            : block_(new block{std::index_sequence_for<Aws...>{}, std::forward<Aws>(awaitables)...}) {
+        }
+
+        // Movable, unlike when_all_t: nothing points into this object, only
+        // out of it to the heap block, so a group can be named, moved and
+        // awaited later.
+        when_any_t(when_any_t&& o) noexcept : block_(std::exchange(o.block_, nullptr)) {
         }
 
         when_any_t(const when_any_t&) = delete;
         when_any_t& operator=(const when_any_t&) = delete;
-        when_any_t(when_any_t&&) = delete;
         when_any_t& operator=(when_any_t&&) = delete;
-        // Neither copyable nor movable, as with when_all: leaves, slots
-        // and state_ reference each other by address, so the group is
-        // awaited where it was created.
+
+        // Lets go of the block; the losers still running keep it alive.
+        ~when_any_t() {
+            if (block_) block_->release();
+        }
 
         [[nodiscard]] bool await_ready() const noexcept {
             return false;
         }
 
-        // Starts each child in turn until one wins (or they're all running);
-        // suspends if none has won yet, resumes if one did.
         bool await_suspend(const std::coroutine_handle<> parent) {
-            state_.parent = parent;
-            state_.starting = true;
-            for (auto& leaf : leaves_) {
-                leaf.start();
-                if (state_.winner != detail::no_winner) break;
-            }
-            state_.starting = false;
-            return state_.winner == detail::no_winner;
+            return block_->start(parent, block_->leaves);
         }
 
         // Reports the winner as a variant; rethrows its error if it threw.
@@ -103,39 +208,26 @@ namespace coro {
         }
 
     private:
-        template <std::size_t... Is>
-        when_any_t(std::index_sequence<Is...>, Aws&&... awaitables)
-            : leaves_{bound<Is>(std::forward<Aws>(awaitables))...} {
-        }
-
-        // Wraps one awaitable in a leaf (its single driver), storing the
-        // result into the matching slot and reporting back to any_state.
-        template <std::size_t I, typename Aw>
-        detail::leaf<detail::any_state> bound(Aw&& awaitable) {
-            auto leaf = detail::run_child<detail::any_state>(std::get<I>(slots_), std::forward<Aw>(awaitable));
-            leaf.bind(&state_, I);
-            return leaf;
-        }
+        using block = detail::any_block<Aws...>;
 
         // Builds the variant for the winning alternative.
         template <std::size_t... Is>
         Variant winner(std::index_sequence<Is...>) {
+            const std::size_t won = block_->winner.load(std::memory_order_acquire);
             std::optional<Variant> result;
-            (void)((state_.winner == Is ? (result.emplace(alternative<Is>()), true) : false) || ...);
+            (void)((won == Is ? (result.emplace(alternative<Is>()), true) : false) || ...);
             return std::move(*result);
         }
 
         // Reads the winner's slot: rethrows its error, or moves its value out.
         template <std::size_t I>
         Variant alternative() {
-            auto& slot = std::get<I>(slots_);
+            auto& slot = std::get<I>(block_->slots);
             if (slot.error) std::rethrow_exception(slot.error);
-            return Variant{std::in_place_index<I>, std::move(*slot.value)};
+            return Variant{std::in_place_index<I>, slot.take()};
         }
 
-        detail::any_state state_;
-        std::tuple<detail::slot<await_value_t<Aws>>...> slots_;
-        std::array<detail::leaf<detail::any_state>, sizeof...(Aws)> leaves_;
+        block* block_;
     };
 
     // Run every awaitable concurrently; co_await yields a variant holding the
@@ -151,57 +243,52 @@ namespace coro {
     // co_await yields a {index, value} pair naming the winner.
     template <awaitable Aw>
     class [[nodiscard]] when_any_range {
+        static_assert(std::is_move_constructible_v<Aw>,
+                      "when_any over a range moves each awaitable into its own driver; "
+                      "a non-movable awaitable has to be wrapped in a task first");
+
     public:
         using Value = await_value_t<Aw>;
 
-        explicit when_any_range(std::vector<Aw> awaitables)
-            : awaitables_(std::move(awaitables)) {
-            if (awaitables_.empty()) {
+        explicit when_any_range(std::vector<Aw> awaitables) {
+            if (awaitables.empty()) {
                 throw std::invalid_argument("coro::when_any: the range is empty, so nothing can win");
             }
+            block_ = new block{std::move(awaitables)};
+        }
 
-            slots_.resize(awaitables_.size());
-            leaves_.reserve(awaitables_.size());
-            for (std::size_t i = 0; i < awaitables_.size(); ++i) {
-                leaves_.push_back(detail::run_child<detail::any_state>(
-                    slots_[i], std::move(awaitables_[i])));
-                leaves_.back().bind(&state_, i);
-            }
+        when_any_range(when_any_range&& o) noexcept : block_(std::exchange(o.block_, nullptr)) {
         }
 
         when_any_range(const when_any_range&) = delete;
         when_any_range& operator=(const when_any_range&) = delete;
-        when_any_range(when_any_range&&) = delete;
         when_any_range& operator=(when_any_range&&) = delete;
+
+        ~when_any_range() {
+            if (block_) block_->release();
+        }
 
         [[nodiscard]] bool await_ready() const noexcept {
             return false;
         }
 
         bool await_suspend(const std::coroutine_handle<> parent) {
-            state_.parent = parent;
-            state_.starting = true;
-            for (auto& leaf : leaves_) {
-                leaf.start();
-                if (state_.winner != detail::no_winner) break;
-            }
-            state_.starting = false;
-            return state_.winner == detail::no_winner;
+            return block_->start(parent, block_->leaves);
         }
 
         // Returns the winner as a {index, value} pair; rethrows its error if
         // the winning awaitable threw.
         std::pair<std::size_t, Value> await_resume() {
-            auto& slot = slots_[state_.winner];
+            const std::size_t won = block_->winner.load(std::memory_order_acquire);
+            auto& slot = block_->slots[won];
             if (slot.error) std::rethrow_exception(slot.error);
-            return {state_.winner, std::move(*slot.value)};
+            return {won, slot.take()};
         }
 
     private:
-        detail::any_state state_;
-        std::vector<Aw> awaitables_;
-        std::vector<detail::slot<Value>> slots_;
-        std::vector<detail::leaf<detail::any_state>> leaves_;
+        using block = detail::any_range_block<Aw>;
+
+        block* block_ = nullptr;
     };
 
     // Range overload: when_any over a vector of one awaitable type.

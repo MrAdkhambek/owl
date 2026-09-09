@@ -44,6 +44,21 @@ namespace coro {
 
         template<typename T>
         using awaiter_t = std::remove_reference_t<decltype(get_awaiter(std::declval<T>()))>;
+
+        // How a combinator or adapter keeps a child handed to it as Aw, the
+        // deduced forwarding-reference type. An lvalue is borrowed: the
+        // caller still owns it and keeps it alive. A movable rvalue is moved
+        // in, so that a group built from temporaries can be named and
+        // awaited later -- `auto g = when_all(f(), h()); co_await g;` --
+        // instead of dangling the moment the statement that built it ends.
+        // A non-movable rvalue (async_mutex::lock_operation, an as_result_t
+        // over a bare awaiter) can only be borrowed, and must therefore be
+        // awaited within the full-expression that created it.
+        template<typename Aw>
+        using child_storage_t = std::conditional_t<
+            !std::is_lvalue_reference_v<Aw> && std::is_move_constructible_v<std::remove_cvref_t<Aw>>,
+            std::remove_cvref_t<Aw>,
+            Aw&&>;
     }
 
     // What await_resume gives back. Names the result type of `co_await a`.
