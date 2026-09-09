@@ -40,7 +40,7 @@ Link `owl::coro` (pulls `Threads`). `coro.h` is the umbrella and includes every 
 | `result/` | failure as data: `result`, `as_result`, `as_tuple` |
 | `run/` | into and out of coroutine-land: `sync_wait`, `schedule_on`, `resume_on` |
 | `executors/` | things that actually run work: `static_thread_pool`, `timer_scheduler` |
-| `io/` | `native_reactor` |
+| `io/` | `native_reactor`, `reactor_ref` |
 | `sync/` | `async_mutex` |
 
 ## Tasks
@@ -272,6 +272,16 @@ co_await reactor.sleep(20ms);   // timeout < 0 means forever
 - Concept `coro::io_reactor` — `wait` and `sleep` return `task<wait_status>`
 - Completions resume on the reactor thread
 - Tear down only when nothing is parked: shutdown force-resumes stragglers with `wait_status::cancelled`, and a coroutine resumed that way must not touch the reactor again
+
+### `reactor_ref`
+
+`coro::reactor_ref` is a non-owning, type-erased handle to any `io_reactor`: a driver that must not be a template on the reactor type (sql's postgres connection, redis's connection) takes one and calls `wait(fd, interest, timeout)` and `release(fd)` through it. A default-constructed handle is null: `wait` answers `wait_status::error` without parking and `release` is a no-op. The reactor must outlive every handle.
+
+```cpp
+coro::native_reactor reactor;
+coro::reactor_ref io{reactor};
+const auto st = co_await io.wait(fd, coro::interest::read, 500ms);
+```
 
 ## Async mutex
 

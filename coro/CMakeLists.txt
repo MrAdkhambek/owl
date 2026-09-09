@@ -64,6 +64,7 @@ target_sources(coro INTERFACE
         include/coro/executors/timer_scheduler.h
 
         include/coro/io/reactor.h
+        include/coro/io/reactor_ref.h
 
         include/coro/sync/async_mutex.h
 )
@@ -132,4 +133,5 @@ if (BUILD_TESTING)
     coro_add_test(sync/test_async_mutex)
 
     coro_add_test(io/test_reactor)
+    coro_add_test(io/test_reactor_ref)
 endif ()

@@ -34,5 +34,6 @@
 #include "coro/executors/timer_scheduler.h"
 
 #include "coro/io/reactor.h"
+#include "coro/io/reactor_ref.h"
 
 #include "coro/sync/async_mutex.h"
