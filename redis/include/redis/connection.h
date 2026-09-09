@@ -23,8 +23,9 @@
 // timeout, because the reply stream is ambiguous afterwards; a socket or
 // protocol error marks it broken and reports connection; a top-level error
 // reply is error{command} and the connection is kept. The fd is released to
-// the reactor before hiredis closes it, always: the h2o loop reactor keeps
-// a socket wrapper per fd and would otherwise fight redisFree for the close.
+// the reactor before hiredis closes it, always: a reactor keys whatever it
+// keeps by descriptor number, and the number must be out of its map before
+// hiredis frees it for the next connection to take.
 
 #include <cerrno>
 #include <chrono>
@@ -216,9 +217,11 @@ namespace redis {
             return error{error_kind::connection, conn_ != nullptr && conn_->err != 0 ? conn_->errstr : "connection is broken"};
         }
 
-        // Release the reactor's wrapper, then let hiredis close the fd, then
-        // null everything so a second call (the destructor after a timeout)
-        // is a no-op.
+        // Drop the reactor's wrapper first, then let hiredis close the fd,
+        // then null everything so a second call -- the destructor after a
+        // timeout -- is a no-op. The reactor closes only its own copy of the
+        // descriptor, so this order is about keeping the number out of its
+        // map, not about who closes what.
         void finish() noexcept {
             if (conn_ == nullptr) return;
             if (fd_ >= 0) io_.release(fd_);

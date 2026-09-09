@@ -10,7 +10,9 @@
 // default-constructed handle is null: wait answers error without parking
 // and release is a no-op.
 //
-// release(fd) hands a descriptor back before its owner closes it. A reactor
+// release(fd) tells the reactor to stop watching a descriptor and to drop
+// whatever state it kept for it. The caller's descriptor is not touched, so
+// it does not matter whether the caller has already closed it. A reactor
 // that keeps no per-fd state (native_reactor) has no release; the thunk is
 // then a no-op, so drivers call it unconditionally.
 

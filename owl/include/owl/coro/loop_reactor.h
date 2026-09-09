@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <unistd.h>
 #include <utility>
 #include <unordered_map>
 
@@ -10,12 +11,27 @@
 #include <h2o.h>
 
 namespace owl {
-    // coro::io_reactor over an explicit h2o loop: the psql driver's wait
-    // mechanism under owl. One h2o_socket per fd, created once and kept for
-    // the connection's life -- h2o's evloop socket owns the fd it wraps, so
-    // a naive re-wrap would fight PQfinish for the close; release(fd)
-    // exports the socket so the fd survives, and is the only legal way to
-    // hand the fd back. Read is level-triggered on the evloop backend, so
+    // coro::io_reactor over an explicit h2o loop: the wait mechanism the
+    // psql and redis drivers use under owl. One h2o_socket per fd, created
+    // on the first wait and kept until release(fd).
+    //
+    // What it wraps is a dup of the caller's descriptor, never the
+    // descriptor itself. h2o's evloop socket owns whatever fd it is given:
+    // it sets O_NONBLOCK on it, registers it with the kernel queue,
+    // deregisters it, and closes it. The drivers own their descriptor too,
+    // and they let go of it on their own schedule -- libpq drops its socket
+    // the moment the backend dies, hiredis the same on EOF -- after which
+    // the number is free for the next connection to take. A reactor holding
+    // the caller's number would then deregister or close a descriptor that
+    // now belongs to someone else. Two descriptors over one open file
+    // description report identical readiness, so a private dup costs one fd
+    // per connection and makes every one of those operations the reactor's
+    // own business.
+    //
+    // The map is keyed by the caller's number, so a release must happen
+    // before that number can be reused; both drivers release in finish(),
+    // which runs before their connection object dies. Read is
+    // level-triggered on the evloop backend, so
     // the read callback stops reading before resuming, making each wait
     // one-shot like native_reactor's; notify_write is one-shot by itself.
     // A default-constructed reactor is the null reactor: wait/sleep answer
@@ -43,21 +59,24 @@ namespace owl {
             co_return co_await sleep_awaiter{.self = this, .timeout = timeout};
         }
 
-        // Hands the fd back before PQfinish closes it: export detaches the
-        // socket from the loop with the fd surviving in the export info.
-        // h2o_socket_dispose_export is deliberately NOT called -- it closes
-        // info.fd (verified empirically), which is the very fd PQfinish
-        // must close. The exported input buffer is empty on every driver
-        // path (statements are fully drained before release), so skipping
-        // dispose costs nothing on this rare path. Only legal with no wait
-        // armed on the fd.
+        // Stops watching the descriptor and closes the reactor's copy of
+        // it. The caller's own descriptor is not touched, so this is
+        // correct whether the caller has closed it already or is about to:
+        // PQfinish and redisFree still have theirs to close. Only legal
+        // with no wait armed on the fd.
         void release(const int fd) const {
             const auto it = sockets_.find(fd);
             if (it == sockets_.end()) return;
-            h2o_socket_export_t info{};
-            h2o_socket_export(it->second.sock, &info);
-            (void)info;
+            h2o_socket_close(it->second.sock);
             sockets_.erase(it);
+        }
+
+        // A worker torn down with a connection still open leaves entries
+        // here; the duplicated descriptors are the reactor's to close.
+        ~loop_reactor() {
+            for (const auto& [fd, e] : sockets_) {
+                if (e.sock != nullptr) h2o_socket_close(e.sock);
+            }
         }
 
     private:
@@ -140,7 +159,14 @@ namespace owl {
                     return false;
                 }
                 if (e.sock == nullptr) {
-                    e.sock = h2o_evloop_socket_create(self->loop_, fd, H2O_SOCKET_FLAG_DONT_READ);
+                    // The dup, not the caller's fd: see the class comment.
+                    const int owned = ::dup(fd);
+                    if (owned < 0) {
+                        self->sockets_.erase(fd);
+                        req.status = coro::wait_status::error;
+                        return false;
+                    }
+                    e.sock = h2o_evloop_socket_create(self->loop_, owned, H2O_SOCKET_FLAG_DONT_READ);
                 }
                 req.sock = e.sock;
                 req.owner = &e;

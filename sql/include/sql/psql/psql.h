@@ -17,10 +17,11 @@
 //
 // During the handshake the socket may change under us -- PQconnectPoll
 // closes and reopens it on a multi-address host -- so each connect-phase
-// wait releases its reactor wrapper right after: the reactor never holds
-// a wrapper on an fd libpq may close. After PGRES_POLLING_OK the fd is
-// stable for the connection's life, and execute keeps its wrapper until
-// finish(). One command per literal: PQsendQueryParams refuses several.
+// wait releases its reactor wrapper right after: a reactor keys whatever it
+// keeps by descriptor number, and a number libpq has recycled must not find
+// the wrapper of the socket that used to hold it. After PGRES_POLLING_OK
+// the fd is stable for the connection's life, and execute keeps its wrapper
+// until finish(). One command per literal: PQsendQueryParams refuses several.
 
 #include <array>
 #include <chrono>
@@ -363,9 +364,12 @@ namespace sql {
                 return error{error_kind::connection, conn_ != nullptr ? PQerrorMessage(conn_) : "connection is closed"};
             }
 
-            // Release the reactor's wrapper, then let libpq close the fd, then
-            // null everything so a second call (the destructor after a
-            // timeout) is a no-op.
+            // Drop the reactor's wrapper first, then let libpq close the
+            // fd, then null everything so a second call -- the destructor
+            // after a timeout -- is a no-op. The reactor closes only its own
+            // copy of the descriptor, so this order is about keeping the
+            // number out of its map before libpq frees it, not about who
+            // closes what.
             void finish() noexcept {
                 if (conn_ == nullptr) return;
                 if (fd_ >= 0) io_.release(fd_);

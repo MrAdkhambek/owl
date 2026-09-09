@@ -123,6 +123,73 @@ namespace {
         h2o_evloop_destroy(loop);
     }
 
+    // Descriptors this process holds open, for the leak guard below.
+    int open_fd_count() {
+        int open = 0;
+        for (int fd = 0; fd < 512; ++fd) {
+            if (::fcntl(fd, F_GETFD) != -1) ++open;
+        }
+        return open;
+    }
+
+    // The driver may close its descriptor before the connection is torn
+    // down -- libpq drops its socket the moment the backend dies -- and the
+    // number is then free for the next connection. Releasing must reach for
+    // the reactor's own copy, never that number, or it deregisters and
+    // closes whatever has taken it.
+    TEST(LoopReactor, ReleaseAfterTheOwnerClosedTheDescriptor) {
+        h2o_loop_t* const loop = h2o_evloop_create();
+        const owl::loop_reactor reactor{loop};
+        int fds[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+        auto body = [&]() -> coro::task<coro::wait_status> {
+            co_return co_await reactor.wait(fds[0], coro::interest::read, 20ms);
+        };
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
+
+        ::close(fds[0]);          // the owner closes first, the way libpq does
+        reactor.release(fds[0]);  // and the reactor still has only its own to close
+
+        // Whatever takes the freed number is watchable and still completes.
+        int reused[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, reused), 0);
+        EXPECT_EQ(::write(reused[1], "x", 1), 1);
+        auto again = [&]() -> coro::task<coro::wait_status> {
+            co_return co_await reactor.wait(reused[0], coro::interest::read, 2s);
+        };
+        EXPECT_EQ(pump(loop, again()), coro::wait_status::ready);
+
+        reactor.release(reused[0]);
+        ::close(reused[0]);
+        ::close(reused[1]);
+        ::close(fds[1]);
+        h2o_evloop_destroy(loop);
+    }
+
+    // The reactor duplicates the descriptor it watches, so every release
+    // has to close that duplicate; fifty cycles would otherwise show.
+    TEST(LoopReactor, RepeatedWaitsAndReleasesLeakNoDescriptors) {
+        h2o_loop_t* const loop = h2o_evloop_create();
+        const owl::loop_reactor reactor{loop};
+        int fds[2];
+        ASSERT_EQ(::pipe(fds), 0);
+
+        const int before = open_fd_count();
+        for (int i = 0; i < 50; ++i) {
+            auto body = [&]() -> coro::task<coro::wait_status> {
+                co_return co_await reactor.wait(fds[0], coro::interest::read, 1ms);
+            };
+            EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
+            reactor.release(fds[0]);
+        }
+        EXPECT_EQ(open_fd_count(), before);
+
+        ::close(fds[0]);
+        ::close(fds[1]);
+        h2o_evloop_destroy(loop);
+    }
+
     TEST(LoopReactor, NullReactorAnswersErrorWithoutParking) {
         const owl::loop_reactor reactor;
 
