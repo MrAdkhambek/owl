@@ -34,12 +34,13 @@
 #include "owl/core/token.h"
 #include "owl/util/util.h"
 
-#ifdef OWL_ENABLE_POSTGRESQL
+#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE)
 #include <sql/pool.h>
+#endif
+#ifdef OWL_ENABLE_POSTGRESQL
 #include <sql/psql.h>
 #endif
 #ifdef OWL_ENABLE_SQLITE
-#include <sql/pool.h>
 #include <sql/sqlite.h>
 #endif
 

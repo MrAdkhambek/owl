@@ -2,11 +2,8 @@
 
 #include <atomic>
 #include <cstdlib>
-#include <filesystem>
 #include <memory>
-#include <string>
 #include <thread>
-#include <unistd.h>
 
 #include <coro/run/sync_wait.h>
 #include <coro/task.h>
@@ -19,48 +16,40 @@
 #include <owl/extract/from_context.h>
 #include <owl/server.h>
 
+#include "support/temp_db.h"
+
 namespace {
     struct App final {
     };
 
-    std::string temp_db_path() {
-        return (std::filesystem::temp_directory_path() / ("owl_wiring_" + std::to_string(::getpid()) + ".db")).string();
-    }
-
-    // An h2o context plus the dispatcher's own on_context_init: exactly the
-    // per-worker wiring Server runs, without a listener.
+    // An h2o context wired the way Server wires a worker -- the same
+    // make_dispatcher, then h2o_context_init running on_context_init --
+    // without a listener.
     struct Fixture final {
+        sql_test::temp_db db{"wiring"};
         h2o_globalconf_t globalconf{};
         h2o_context_t ctx{};
         h2o_conn_t conn{};
         h2o_req_t req{};
         owl::detail::Dispatcher<App>* dispatcher = nullptr;
 
-        // Same order as Server: the handler is created before the context,
-        // because h2o_context_init sizes its per-handler slot array from the
-        // handlers registered so far and then runs every on_context_init.
         Fixture(const bool wire_sqlite, const char* const psql_dsn) {
             h2o_config_init(&globalconf);
             auto* const hostconf = h2o_config_register_host(&globalconf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             auto* const pathconf = h2o_config_register_path(hostconf, "/", 0);
 
-            dispatcher = reinterpret_cast<owl::detail::Dispatcher<App>*>(
-                h2o_create_handler(pathconf, sizeof(owl::detail::Dispatcher<App>)));
-            dispatcher->super.on_context_init = &owl::detail::on_context_init<App>;
-            dispatcher->super.on_context_dispose = &owl::detail::on_context_dispose<App>;
-            std::construct_at(&dispatcher->state, std::make_shared<App>());
+            owl::detail::SqlConfigs configs;
 #ifdef OWL_ENABLE_POSTGRESQL
-            std::construct_at(&dispatcher->psql_config);
-            if (psql_dsn != nullptr) dispatcher->psql_config = sql::psql::config{.dsn = psql_dsn};
+            if (psql_dsn != nullptr) configs.psql = sql::psql::config{.dsn = psql_dsn};
 #else
             (void)psql_dsn;
 #endif
 #ifdef OWL_ENABLE_SQLITE
-            std::construct_at(&dispatcher->sqlite_config);
-            if (wire_sqlite) dispatcher->sqlite_config = sql::sqlite::config{.path = temp_db_path()};
+            if (wire_sqlite) configs.sqlite = sql::sqlite::config{.path = db.path.string()};
 #else
             (void)wire_sqlite;
 #endif
+            dispatcher = owl::detail::make_dispatcher<App>(pathconf, nullptr, nullptr, std::make_shared<App>(), std::move(configs));
 
             h2o_context_init(&ctx, h2o_evloop_create(), &globalconf);
             conn.ctx = &ctx;
@@ -81,7 +70,6 @@ namespace {
             h2o_context_dispose(&ctx);
             h2o_evloop_destroy(loop);
             h2o_config_dispose(&globalconf);
-            std::filesystem::remove(temp_db_path());
         }
 
         // Not const: h2o_context_get_handler_context wants a mutable context.
@@ -89,8 +77,10 @@ namespace {
             return *static_cast<const owl::Context<App>*>(h2o_context_get_handler_context(&ctx, &dispatcher->super));
         }
 
-        // Pumps the loop on its own thread, the way a worker owns it, until
-        // `finished` flips; returns that thread's id for the on-loop check.
+        // Pumps the loop on its own thread, the way a worker owns it, and
+        // runs the body there, the way a handler runs: the pools and the
+        // reactor are loop-thread-only. Returns that thread's id for the
+        // on-loop check.
         template <typename Body>
         std::thread::id run_on_loop(Body body) {
             std::atomic<bool> finished{false};
@@ -100,6 +90,7 @@ namespace {
                 while (!finished.load()) h2o_evloop_run(ctx.loop, 5);
             });
             coro::sync_wait([&]() -> coro::task<> {
+                co_await context().loop.schedule();
                 co_await body();
                 finished.store(true);
             }());
@@ -161,14 +152,8 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
     const auto pg = owl::fromContextRef<sql::pool<sql::psql>>(context, *request);
     ASSERT_TRUE(pg.has_value());
 
-    // A handler already runs on the worker, so the psql pool arms the
-    // loop_reactor from the loop thread; this body starts on the test
-    // thread and must hop there first -- the reactor's h2o state is
-    // loop-thread-only. (The sqlite pool needs no hop: its first move is to
-    // the connection thread, and it comes back through the loop's queue.)
     std::thread::id resumed_on;
     const auto loop_id = fx.run_on_loop([&]() -> coro::task<> {
-        co_await context.loop.schedule();
         const auto r = co_await sql::query<"SELECT $1::int AS answer">(**pg, 42);
         resumed_on = std::this_thread::get_id();
         EXPECT_EQ(r[0]["answer"].as<int>(), 42);
@@ -178,18 +163,18 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
 #endif
 
 TEST(OwlWiring, BuilderAcceptsTheDriverConfigs) {
+    const sql_test::temp_db db{"builder"};
     // Preprocessor lines inside one expression: the chain stays a single
     // rvalue pipeline, with no self-move of the builder.
     const owl::Server<App> server = owl::Server<App>::builder()
                                         .router(owl::Router<App>::make())
                                         .config({.port = 0})
 #ifdef OWL_ENABLE_SQLITE
-                                        .with_sqlite({.path = temp_db_path()})
+                                        .with_sqlite({.path = db.path.string()})
 #endif
 #ifdef OWL_ENABLE_POSTGRESQL
                                         .with_psql({.dsn = "postgres://127.0.0.1:1/nope"})
 #endif
                                         .build_with(std::make_shared<App>());
     EXPECT_NE(server.port(), 0);
-    std::filesystem::remove(temp_db_path());
 }

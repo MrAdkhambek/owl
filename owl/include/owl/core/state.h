@@ -5,16 +5,16 @@
 #include <stdexcept>
 #include <type_traits>
 
+#include "owl/coro/loop_reactor.h"
 #include "owl/coro/loop_scheduler.h"
 
-#ifdef OWL_ENABLE_POSTGRESQL
+#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE)
 #include <sql/pool.h>
+#endif
+#ifdef OWL_ENABLE_POSTGRESQL
 #include <sql/psql.h>
-
-#include "owl/coro/loop_reactor.h"
 #endif
 #ifdef OWL_ENABLE_SQLITE
-#include <sql/pool.h>
 #include <sql/sqlite.h>
 #endif
 
@@ -34,6 +34,13 @@ namespace owl {
         explicit Context(std::shared_ptr<S> s) noexcept : state(std::move(s)) {
         }
 
+        // A worker's Context: the scheduler and the reactor are bound to the
+        // loop from birth, so neither is assigned into afterwards and
+        // neither needs to be movable.
+        Context(std::shared_ptr<S> s, h2o_loop_t* const h2o_loop) noexcept
+            : state(std::move(s)), loop(h2o_loop, &hop), reactor(h2o_loop) {
+        }
+
         Context(const Context&) = delete;
         Context& operator=(const Context&) = delete;
 
@@ -50,13 +57,16 @@ namespace owl {
         // posts into the void.
         owl::loop_scheduler loop;
 
-#ifdef OWL_ENABLE_POSTGRESQL
-        // The psql pool holds a reactor_ref to this reactor, so the reactor
-        // is declared first and destroyed last; a Context is neither
-        // copyable nor movable, so the address is stable. The optional is
-        // empty until on_context_init wires it, and stays empty when the
-        // builder never asked for the driver -- the extractor kicks 500.
+        // The worker's fd reactor on the same loop, for whatever on this
+        // worker parks on a descriptor -- the psql pool today. Declared
+        // before the pools so it outlives them.
         owl::loop_reactor reactor;
+
+#ifdef OWL_ENABLE_POSTGRESQL
+        // Empty until on_context_init wires it, and empty for good when the
+        // builder never asked for the driver -- the extractor kicks 500. The
+        // pool holds a reactor_ref to the member above; a Context is neither
+        // copyable nor movable, so that address is stable.
         std::optional<sql::pool<sql::psql>> psql;
 #endif
 #ifdef OWL_ENABLE_SQLITE

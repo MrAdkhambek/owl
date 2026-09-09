@@ -16,14 +16,13 @@
 #include <chrono>
 #include <prometheus/http.h>
 #endif
-#ifdef OWL_ENABLE_POSTGRESQL
+#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE)
 #include <optional>
-
+#endif
+#ifdef OWL_ENABLE_POSTGRESQL
 #include <sql/psql.h>
 #endif
 #ifdef OWL_ENABLE_SQLITE
-#include <optional>
-
 #include <sql/sqlite.h>
 #endif
 
@@ -34,18 +33,26 @@ namespace owl::detail {
         h2o_socket_t* listener = nullptr;
     };
 
+    // The driver configs the builder collected, as one value that travels
+    // through Server, the Dispatcher and on_context_init unchanged; the
+    // macros stay only where a driver type is named. Empty when no driver
+    // is enabled.
+    struct SqlConfigs final {
+#ifdef OWL_ENABLE_POSTGRESQL
+        std::optional<sql::psql::config> psql;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        std::optional<sql::sqlite::config> sqlite;
+#endif
+    };
+
     template <typename S>
     struct Dispatcher {
         h2o_handler_t super;
         const Router<S>* router;
         const MiddlewareChain<S>* server_layers;
         std::shared_ptr<S> state;
-#ifdef OWL_ENABLE_POSTGRESQL
-        std::optional<sql::psql::config> psql_config;
-#endif
-#ifdef OWL_ENABLE_SQLITE
-        std::optional<sql::sqlite::config> sqlite_config;
-#endif
+        SqlConfigs sql;
     };
 
     struct SendJob {
@@ -113,25 +120,19 @@ namespace owl::detail {
     template <typename S>
     static void on_context_init(h2o_handler_t* handler, h2o_context_t* ctx) {
         const auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(handler);
-        auto* const context = new Context<S>{dispatcher->state};
-        // The scheduler and its hop are born with the Context so extraction
-        // hands handlers a working loop from the first request on; the hop is
-        // registered on this context's queue, which is what makes post()
-        // safe from the pool threads.
+        // The scheduler, its hop and the reactor are born with the Context so
+        // extraction hands handlers a working loop from the first request on;
+        // the hop is registered on this context's queue, which is what makes
+        // post() safe from the pool threads.
+        auto* const context = new Context<S>{dispatcher->state, ctx->loop};
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
-        context->loop = loop_scheduler{ctx->loop, &context->hop};
+        // The pools are built in place: neither copyable nor movable, and
+        // each holds a handle to this Context's own reactor or scheduler.
 #ifdef OWL_ENABLE_POSTGRESQL
-        // Built in place: a pool is neither copyable nor movable, and the
-        // reactor_ref it takes points at this Context's own reactor.
-        context->reactor = owl::loop_reactor{ctx->loop};
-        if (dispatcher->psql_config) {
-            context->psql.emplace(*dispatcher->psql_config, sql::reactor_ref{context->reactor});
-        }
+        if (dispatcher->sql.psql) context->psql.emplace(*dispatcher->sql.psql, sql::reactor_ref{context->reactor});
 #endif
 #ifdef OWL_ENABLE_SQLITE
-        if (dispatcher->sqlite_config) {
-            context->sqlite.emplace(*dispatcher->sqlite_config, sql::scheduler_ref{context->loop});
-        }
+        if (dispatcher->sql.sqlite) context->sqlite.emplace(*dispatcher->sql.sqlite, sql::scheduler_ref{context->loop});
 #endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
@@ -146,9 +147,12 @@ namespace owl::detail {
         delete context;
     }
 
+    // h2o owns the handler's memory (h2o_create_handler allocates it and
+    // h2o_config_dispose frees it after this hook), so only the C++ members
+    // are torn down here.
     template <typename S>
     static void on_dispose(h2o_handler_t* h) {
-        delete reinterpret_cast<Dispatcher<S>*>(h);
+        std::destroy_at(reinterpret_cast<Dispatcher<S>*>(h));
     }
 
     template <typename S>
@@ -202,5 +206,30 @@ namespace owl::detail {
         socklen_t actual_len = sizeof(actual);
         if (::getsockname(fd, reinterpret_cast<sockaddr*>(&actual), &actual_len) != 0) return 0;
         return ntohs(actual.sin_port);
+    }
+
+    // The one place a Dispatcher is built, for Server and for tests that
+    // wire a worker by hand. h2o hands back zeroed memory of the right size,
+    // so the C++ members are constructed in place and on_dispose destroys
+    // them. Must run before h2o_context_init: that sizes each context's
+    // per-handler slot array from the handlers registered so far.
+    template <typename S>
+    [[nodiscard]] static Dispatcher<S>* make_dispatcher(
+        h2o_pathconf_t* const pathconf,
+        const Router<S>* const router,
+        const MiddlewareChain<S>* const server_layers,
+        std::shared_ptr<S> state,
+        SqlConfigs sql
+    ) {
+        auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(h2o_create_handler(pathconf, sizeof(Dispatcher<S>)));
+        dispatcher->super.on_req = &on_req<S>;
+        dispatcher->super.dispose = &on_dispose<S>;
+        dispatcher->super.on_context_init = &on_context_init<S>;
+        dispatcher->super.on_context_dispose = &on_context_dispose<S>;
+        dispatcher->router = router;
+        dispatcher->server_layers = server_layers;
+        std::construct_at(&dispatcher->state, std::move(state));
+        std::construct_at(&dispatcher->sql, std::move(sql));
+        return dispatcher;
     }
 }

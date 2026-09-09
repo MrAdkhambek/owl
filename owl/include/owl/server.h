@@ -22,13 +22,9 @@
 #include "owl/detail.h"
 
 #ifdef OWL_ENABLE_POSTGRESQL
-#include <optional>
-
 #include <sql/psql.h>
 #endif
 #ifdef OWL_ENABLE_SQLITE
-#include <optional>
-
 #include <sql/sqlite.h>
 #endif
 
@@ -81,7 +77,7 @@ namespace owl {
             // macro, so calling it without the option is a compile error.
             template <typename Self>
             [[nodiscard]] auto&& with_psql(this Self&& self, sql::psql::config cfg) {
-                self.psql_config_ = std::move(cfg);
+                self.sql_.psql = std::move(cfg);
                 return std::forward<Self>(self);
             }
 #endif
@@ -89,7 +85,7 @@ namespace owl {
             // Per-worker sqlite connections, each on its own thread.
             template <typename Self>
             [[nodiscard]] auto&& with_sqlite(this Self&& self, sql::sqlite::config cfg) {
-                self.sqlite_config_ = std::move(cfg);
+                self.sql_.sqlite = std::move(cfg);
                 return std::forward<Self>(self);
             }
 #endif
@@ -102,26 +98,15 @@ namespace owl {
                 if (!state) throw std::invalid_argument("Server: state is required");
                 if (!self.router_) throw std::invalid_argument("Server: router is required");
                 if (!self.config_) throw std::invalid_argument("Server: config is required");
-                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)
-#ifdef OWL_ENABLE_POSTGRESQL
-                              , std::move(self.psql_config_)
-#endif
-#ifdef OWL_ENABLE_SQLITE
-                              , std::move(self.sqlite_config_)
-#endif
-                };
+                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state),
+                              std::move(self.sql_)};
             }
 
         private:
             std::unique_ptr<Router<S>> router_;
             std::unique_ptr<Config> config_;
             MiddlewareChain<S> layers_{};
-#ifdef OWL_ENABLE_POSTGRESQL
-            std::optional<sql::psql::config> psql_config_;
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            std::optional<sql::sqlite::config> sqlite_config_;
-#endif
+            detail::SqlConfigs sql_{};
         };
 
         [[nodiscard]] static Builder builder() {
@@ -145,14 +130,8 @@ namespace owl {
         }
 
     private:
-        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers, std::shared_ptr<S> state
-#ifdef OWL_ENABLE_POSTGRESQL
-               , std::optional<sql::psql::config> psql_config
-#endif
-#ifdef OWL_ENABLE_SQLITE
-               , std::optional<sql::sqlite::config> sqlite_config
-#endif
-        )
+        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers,
+               std::shared_ptr<S> state, detail::SqlConfigs sql)
             : router_(std::move(router)),
               config_(std::move(config)),
               layers_(std::move(layers)),
@@ -173,21 +152,7 @@ namespace owl {
             ////////////////////////////////////////////////////////////////////////////////////////////////
             // create single universal handler
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            auto* const dispatcher = reinterpret_cast<detail::Dispatcher<S>*>(h2o_create_handler(pathconf, sizeof(detail::Dispatcher<S>)));
-            dispatcher->super.on_req = &detail::on_req<S>;
-            dispatcher->super.dispose = &detail::on_dispose<S>;
-            dispatcher->super.on_context_init = &detail::on_context_init<S>;
-            dispatcher->super.on_context_dispose = &detail::on_context_dispose<S>;
-
-            dispatcher->router = router_.get();
-            dispatcher->server_layers = &layers_;
-            std::construct_at(&dispatcher->state, state_);
-#ifdef OWL_ENABLE_POSTGRESQL
-            std::construct_at(&dispatcher->psql_config, std::move(psql_config));
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            std::construct_at(&dispatcher->sqlite_config, std::move(sqlite_config));
-#endif
+            (void)detail::make_dispatcher<S>(pathconf, router_.get(), &layers_, state_, std::move(sql));
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
             // init workers

@@ -132,8 +132,10 @@ if (BUILD_TESTING)
 
     if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
         # Links owl::owl + owl::sql; registered here because sql is added
-        # before owl and cannot see the owl target.
+        # before owl and cannot see the owl target. Shares sql's test
+        # support (the temp database file).
         owl_add_test(test_owl_wiring)
+        target_include_directories(test_owl_wiring PRIVATE "${PROJECT_SOURCE_DIR}/sql/tests")
     endif ()
 
     function(owl_add_compile_fail_test name)
