@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git pkg-config ninja-build \
         gcc-14 g++-14 \
-        libssl-dev zlib1g-dev libuv1-dev libsqlite3-dev libhiredis-dev \
+        libssl-dev zlib1g-dev libuv1-dev libpq-dev libhiredis-dev \
     && rm -rf /var/lib/apt/lists/*
 
 ARG CMAKE_VERSION=4.3.0
@@ -44,12 +44,13 @@ RUN cmake -S examples/rest -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE
 
 FROM ubuntu:24.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3t64 zlib1g libsqlite3-0 libhiredis1.1.0 \
+        libssl3t64 zlib1g libpq5 libhiredis1.1.0 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /build/rest /usr/local/bin/rest
 # The compose file sets these; the defaults make a bare `docker run` work
-# against a redis on the same network.
-ENV REST_ADDRESS=0.0.0.0 REST_PORT=8080 REST_DB=/data/rest.db REST_REDIS=redis:6379
-VOLUME /data
+# against a postgres and a redis on the same network.
+ENV REST_ADDRESS=0.0.0.0 REST_PORT=8080 \
+    REST_PG=postgres://rest:rest@postgres:5432/rest \
+    REST_REDIS=redis:6379
 EXPOSE 8080
 CMD ["rest"]

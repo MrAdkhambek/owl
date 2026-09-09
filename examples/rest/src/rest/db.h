@@ -2,8 +2,8 @@
 
 // The schema, applied once at startup.
 
-#include <string>
+#include <sql/psql/psql.h>
 
 namespace rest {
-    void migrate(const std::string& path);
+    void migrate(const sql::psql::config& cfg);
 }

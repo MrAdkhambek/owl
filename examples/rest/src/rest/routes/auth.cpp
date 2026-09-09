@@ -6,7 +6,6 @@
 #include <coro/run/resume_on.h>
 #include <coro/run/schedule_on.h>
 #include <nlohmann/json.hpp>
-#include <sqlite3.h>
 
 #include "rest/auth.h"
 #include "rest/error.h"
@@ -29,7 +28,9 @@ namespace rest::auth {
         const auto inserted = co_await sql::try_query<"INSERT INTO users(username, password) VALUES ($1, $2) RETURNING id">(
             db, username, hashed);
         if (!inserted) {
-            if (inserted.error().code() == SQLITE_CONSTRAINT_UNIQUE) co_return fail(409, "username taken");
+            // 23505 is unique_violation; the username is the only unique
+            // column, so it is the one that clashed.
+            if (inserted.error().sqlstate() == "23505") co_return fail(409, "username taken");
             co_return fail(500, inserted.error().what());
         }
         co_return owl::Response::json(nlohmann::json{{"id", (*inserted)[0][0].as<std::int64_t>()}, {"username", username}}, 201);

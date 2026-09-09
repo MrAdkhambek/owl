@@ -10,7 +10,7 @@
 #include <sql/sql.h>
 
 namespace rest {
-    using Db = sql::pool<sql::sqlite>;
+    using Db = sql::pool<sql::psql>;
     // Sessions and login counters, each with a TTL redis enforces for us.
     using Cache = redis::client;
 

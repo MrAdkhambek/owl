@@ -24,8 +24,9 @@ namespace rest {
     NLOHMANN_DEFINE_TYPE_NON_INTRUSIVE(NewPost, title, body)
 
     // One row of the posts query -- id, author, title, body, created_at --
-    // as the API shows it.
-    inline nlohmann::json post_json(const sql::sqlite::row row) {
+    // as the API shows it. A timestamptz arrives as the text postgres
+    // renders it, which is what the API shows.
+    inline nlohmann::json post_json(const sql::psql::row row) {
         return {
             {"id", row["id"].as<std::int64_t>()},
             {"author", row["author"].as<std::string>()},
