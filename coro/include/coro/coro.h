@@ -33,6 +33,7 @@
 #include "coro/executors/static_thread_pool.h"
 #include "coro/executors/timer_scheduler.h"
 
+#include "coro/io/deadline.h"
 #include "coro/io/reactor.h"
 #include "coro/io/reactor_ref.h"
 

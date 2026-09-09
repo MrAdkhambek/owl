@@ -46,13 +46,13 @@
 #include <string_view>
 #include <utility>
 
+#include <coro/io/deadline.h>
 #include <coro/io/reactor_ref.h>
 #include <coro/task.h>
 
 #include "redis/args.h"
 #include "redis/config.h"
 #include "redis/connection.h"
-#include "redis/detail/deadline.h"
 #include "redis/error.h"
 #include "redis/reply.h"
 
@@ -84,7 +84,7 @@ namespace redis {
             }
             if (!conn_->append(argv)) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
 
-            const auto deadline = detail::deadline_for(cfg_.command_timeout);
+            const coro::deadline deadline{cfg_.command_timeout};
             waiter w{};
             replies_.push(&w);
             if (replies_.head != &w) {
@@ -355,10 +355,10 @@ namespace redis {
 
         // Flush whatever append() left, then one reply; pushes are skipped.
         [[nodiscard]] coro::task<std::expected<reply, error>>
-        read_head(const std::optional<detail::clock::time_point> deadline) const {
+        read_head(const coro::deadline deadline) const {
             for (;;) {
-                if (auto f = co_await conn_->flush(detail::remaining(deadline)); !f) co_return std::unexpected(std::move(f.error()));
-                auto r = co_await conn_->read(detail::remaining(deadline));
+                if (auto f = co_await conn_->flush(deadline.remaining()); !f) co_return std::unexpected(std::move(f.error()));
+                auto r = co_await conn_->read(deadline.remaining());
                 if (r && r->type() == reply_type::push) continue;
                 co_return std::move(r);
             }

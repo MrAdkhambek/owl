@@ -30,7 +30,6 @@ target_sources(redis INTERFACE
         include/redis/reply.h
         include/redis/config.h
         include/redis/connection.h
-        include/redis/detail/deadline.h
         include/redis/args.h
         include/redis/client.h
         include/redis/pubsub.h

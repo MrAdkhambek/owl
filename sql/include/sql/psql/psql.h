@@ -38,6 +38,7 @@
 #include <libpq-fe.h>
 
 #include <coro/concepts/io_reactor.h>
+#include <coro/io/deadline.h>
 #include <coro/task.h>
 #include <fstr/fstr.h>
 
@@ -233,14 +234,14 @@ namespace sql {
                 auto c = std::unique_ptr<connection>(new connection{raw, io, cfg.query_timeout});
                 if (PQstatus(raw) == CONNECTION_BAD) co_return std::unexpected(error{error_kind::connect, PQerrorMessage(raw)});
 
-                const auto deadline = deadline_for(cfg.connect_timeout);
+                const coro::deadline deadline{cfg.connect_timeout};
                 for (;;) {
                     const PostgresPollingStatusType poll = PQconnectPoll(raw);
                     if (poll == PGRES_POLLING_OK) break;
                     if (poll == PGRES_POLLING_FAILED) co_return std::unexpected(error{error_kind::connect, PQerrorMessage(raw)});
                     const auto want = poll == PGRES_POLLING_WRITING ? coro::interest::write : coro::interest::read;
                     const int fd = PQsocket(raw);
-                    const auto st = co_await io.wait(fd, want, remaining(deadline));
+                    const auto st = co_await io.wait(fd, want, deadline.remaining());
                     io.release(fd);
                     if (st == coro::wait_status::timeout) co_return std::unexpected(error{error_kind::timeout, "connect timed out"});
                     if (st != coro::wait_status::ready) co_return std::unexpected(error{error_kind::connect, "reactor failed while connecting"});
@@ -281,12 +282,12 @@ namespace sql {
                     co_return std::unexpected(broken());
                 }
 
-                const auto deadline = deadline_for(query_timeout_);
+                const coro::deadline deadline{query_timeout_};
                 for (;;) {
                     const int flushed = PQflush(conn_);
                     if (flushed == 0) break;
                     if (flushed < 0) co_return std::unexpected(broken());
-                    if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::write, remaining(deadline)))) {
+                    if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::write, deadline.remaining()))) {
                         co_return std::unexpected(std::move(*failed));
                     }
                 }
@@ -294,7 +295,7 @@ namespace sql {
                 pgresult_ptr last;
                 for (;;) {
                     while (PQisBusy(conn_) != 0) {
-                        if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::read, remaining(deadline)))) {
+                        if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::read, deadline.remaining()))) {
                             co_return std::unexpected(std::move(*failed));
                         }
                         if (PQconsumeInput(conn_) == 0) co_return std::unexpected(broken());
@@ -327,23 +328,10 @@ namespace sql {
             }
 
         private:
-            using clock = std::chrono::steady_clock;
-
             connection(PGconn* const conn, const io& io, const std::chrono::milliseconds query_timeout) noexcept
                 : conn_(conn),
                   io_(io),
                   query_timeout_(query_timeout) {
-            }
-
-            [[nodiscard]] static std::optional<clock::time_point> deadline_for(const std::chrono::milliseconds budget) noexcept {
-                if (budget.count() < 0) return std::nullopt;
-                return clock::now() + budget;
-            }
-
-            [[nodiscard]] static std::chrono::milliseconds remaining(const std::optional<clock::time_point> deadline) noexcept {
-                if (!deadline) return std::chrono::milliseconds{-1};
-                const auto left = std::chrono::ceil<std::chrono::milliseconds>(*deadline - clock::now());
-                return left.count() < 0 ? std::chrono::milliseconds{0} : left;
             }
 
             // What one readiness wait on the connection's fd came to. nullopt

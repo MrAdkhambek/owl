@@ -63,6 +63,7 @@ target_sources(coro INTERFACE
         include/coro/executors/detail/timed_wait_queue.h
         include/coro/executors/timer_scheduler.h
 
+        include/coro/io/deadline.h
         include/coro/io/reactor.h
         include/coro/io/reactor_ref.h
 
@@ -134,4 +135,5 @@ if (BUILD_TESTING)
 
     coro_add_test(io/test_reactor)
     coro_add_test(io/test_reactor_ref)
+    coro_add_test(io/test_deadline)
 endif ()

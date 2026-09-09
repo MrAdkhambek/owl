@@ -44,12 +44,12 @@
 #include <hiredis/hiredis.h>
 
 #include <coro/concepts/io_reactor.h>
+#include <coro/io/deadline.h>
 #include <coro/io/reactor_ref.h>
 #include <coro/task.h>
 
 #include "redis/args.h"
 #include "redis/config.h"
-#include "redis/detail/deadline.h"
 #include "redis/error.h"
 #include "redis/reply.h"
 
@@ -66,10 +66,10 @@ namespace redis {
             auto c = std::unique_ptr<connection>(new connection{raw, io});
             if (raw->err != 0) co_return std::unexpected(error{error_kind::connect, raw->errstr});
 
-            const auto deadline = detail::deadline_for(cfg.connect_timeout);
+            const coro::deadline deadline{cfg.connect_timeout};
             // The non-blocking connect is in flight: writable means it ended,
             // one way or the other, and SO_ERROR says which.
-            const auto st = co_await io.wait(c->fd_, coro::interest::write, detail::remaining(deadline));
+            const auto st = co_await io.wait(c->fd_, coro::interest::write, deadline.remaining());
             if (st == coro::wait_status::timeout) co_return std::unexpected(error{error_kind::timeout, "connect timed out"});
             if (st != coro::wait_status::ready) co_return std::unexpected(error{error_kind::connect, "reactor failed while connecting"});
             int so_error = 0;
@@ -131,12 +131,12 @@ namespace redis {
         // Write-waits until hiredis's output buffer is empty.
         [[nodiscard]] coro::task<std::expected<void, error>> flush(const std::chrono::milliseconds budget) {
             if (!ok_) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
-            const auto deadline = detail::deadline_for(budget);
+            const coro::deadline deadline{budget};
             for (;;) {
                 int done = 0;
                 if (redisBufferWrite(conn_, &done) != REDIS_OK) co_return std::unexpected(broken());
                 if (done != 0) co_return std::expected<void, error>{};
-                if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::write, detail::remaining(deadline)))) {
+                if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::write, deadline.remaining()))) {
                     co_return std::unexpected(std::move(*failed));
                 }
             }
@@ -146,7 +146,7 @@ namespace redis {
         // top-level error reply comes back as error{command}.
         [[nodiscard]] coro::task<std::expected<reply, error>> read(const std::chrono::milliseconds budget) {
             if (!ok_) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
-            const auto deadline = detail::deadline_for(budget);
+            const coro::deadline deadline{budget};
             for (;;) {
                 void* raw = nullptr;
                 if (redisGetReplyFromReader(conn_, &raw) != REDIS_OK) co_return std::unexpected(broken());
@@ -158,7 +158,7 @@ namespace redis {
                     }
                     co_return std::move(r);
                 }
-                if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::read, detail::remaining(deadline)))) {
+                if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::read, deadline.remaining()))) {
                     co_return std::unexpected(std::move(*failed));
                 }
                 if (redisBufferRead(conn_) != REDIS_OK) co_return std::unexpected(broken());
@@ -170,7 +170,7 @@ namespace redis {
         }
 
         [[nodiscard]] coro::task<std::expected<void, error>>
-        handshake(const config& cfg, const std::optional<detail::clock::time_point> deadline) {
+        handshake(const config& cfg, const coro::deadline deadline) {
             std::vector<std::string_view> hello{"HELLO", "3"};
             if (!cfg.password.empty()) {
                 hello.push_back("AUTH");
@@ -189,10 +189,10 @@ namespace redis {
 
         // One command, one reply, on a connection nobody else is using yet.
         [[nodiscard]] coro::task<std::expected<reply, error>>
-        exchange(const std::span<const std::string_view> argv, const std::optional<detail::clock::time_point> deadline) {
+        exchange(const std::span<const std::string_view> argv, const coro::deadline deadline) {
             if (!append(argv)) co_return std::unexpected(broken());
-            if (auto f = co_await flush(detail::remaining(deadline)); !f) co_return std::unexpected(std::move(f.error()));
-            co_return co_await read(detail::remaining(deadline));
+            if (auto f = co_await flush(deadline.remaining()); !f) co_return std::unexpected(std::move(f.error()));
+            co_return co_await read(deadline.remaining());
         }
 
         // A handshake failure is a connect failure whatever step said it,
