@@ -75,6 +75,12 @@ if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
     target_link_libraries(owl INTERFACE sql)
 endif ()
 
+if (OWL_ENABLE_REDIS)
+    # redis is added before owl (owl must link it); OWL_ENABLE_REDIS rides
+    # on the redis target and arrives transitively.
+    target_link_libraries(owl INTERFACE redis)
+endif ()
+
 target_link_libraries(owl INTERFACE
         PkgConfig::H2O
         coro
@@ -133,7 +139,8 @@ if (BUILD_TESTING)
     if (OWL_ENABLE_SQLITE OR OWL_ENABLE_POSTGRESQL)
         # Links owl::owl + owl::sql; registered here because sql is added
         # before owl and cannot see the owl target. Shares sql's test
-        # support (the temp database file).
+        # support (the temp database file). Its redis cases run when
+        # OWL_ENABLE_REDIS is on alongside a sql driver.
         owl_add_test(test_owl_wiring)
         target_include_directories(test_owl_wiring PRIVATE "${PROJECT_SOURCE_DIR}/sql/tests")
     endif ()

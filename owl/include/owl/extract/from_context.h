@@ -43,6 +43,9 @@
 #ifdef OWL_ENABLE_SQLITE
 #include <sql/sqlite/sqlite.h>
 #endif
+#ifdef OWL_ENABLE_REDIS
+#include <redis/client.h>
+#endif
 
 namespace owl {
     namespace detail {
@@ -284,6 +287,18 @@ namespace owl {
         std::expected<const sql::pool<sql::sqlite>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
             if (ctx.sqlite) return &*ctx.sqlite;
             return KickToken::internal_error("sqlite pool is not wired");
+        }
+    };
+#endif
+#ifdef OWL_ENABLE_REDIS
+    // The worker's Redis client, by const& like a pool: commands go through
+    // a const client, and the multiplexer's state is its own business.
+    template <>
+    struct FromContextRef<redis::client> {
+        template <typename S>
+        std::expected<const redis::client*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (ctx.redis) return &*ctx.redis;
+            return KickToken::internal_error("redis client is not wired");
         }
     };
 #endif

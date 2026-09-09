@@ -17,6 +17,9 @@
 #ifdef OWL_ENABLE_SQLITE
 #include <sql/sqlite/sqlite.h>
 #endif
+#ifdef OWL_ENABLE_REDIS
+#include <redis/client.h>
+#endif
 
 namespace owl {
     // Per-worker server state handed to extractors and the handler. Passed by
@@ -30,9 +33,6 @@ namespace owl {
         static_assert(!std::is_void_v<S>, "Context requires a state type");
 
         Context() = default;
-
-        explicit Context(std::shared_ptr<S> s) noexcept : state(std::move(s)) {
-        }
 
         // A worker's Context: the scheduler and the reactor are bound to the
         // loop from birth, so neither is assigned into afterwards and
@@ -73,6 +73,12 @@ namespace owl {
         // Per worker like the psql pool: the sqlite connection threads post
         // their completions back through this worker's loop_scheduler.
         std::optional<sql::pool<sql::sqlite>> sqlite;
+#endif
+#ifdef OWL_ENABLE_REDIS
+        // The worker's Redis client: one multiplexed connection, plus one
+        // per live subscription, on this worker's reactor. Wired like the
+        // pools above; empty for good when the builder never asked.
+        std::optional<redis::client> redis;
 #endif
     };
 

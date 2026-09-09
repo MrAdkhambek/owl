@@ -16,7 +16,7 @@
 #include <chrono>
 #include <prometheus/http.h>
 #endif
-#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE)
+#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE) || defined(OWL_ENABLE_REDIS)
 #include <optional>
 #endif
 #ifdef OWL_ENABLE_POSTGRESQL
@@ -24,6 +24,11 @@
 #endif
 #ifdef OWL_ENABLE_SQLITE
 #include <sql/sqlite/sqlite.h>
+#endif
+#ifdef OWL_ENABLE_REDIS
+#include <coro/io/reactor_ref.h>
+#include <redis/client.h>
+#include <redis/config.h>
 #endif
 
 namespace owl::detail {
@@ -37,12 +42,15 @@ namespace owl::detail {
     // through Server, the Dispatcher and on_context_init unchanged; the
     // macros stay only where a driver type is named. Empty when no driver
     // is enabled.
-    struct SqlConfigs final {
+    struct DriverConfigs final {
 #ifdef OWL_ENABLE_POSTGRESQL
         std::optional<sql::psql::config> psql;
 #endif
 #ifdef OWL_ENABLE_SQLITE
         std::optional<sql::sqlite::config> sqlite;
+#endif
+#ifdef OWL_ENABLE_REDIS
+        std::optional<redis::config> redis;
 #endif
     };
 
@@ -52,7 +60,7 @@ namespace owl::detail {
         const Router<S>* router;
         const MiddlewareChain<S>* server_layers;
         std::shared_ptr<S> state;
-        SqlConfigs sql;
+        DriverConfigs drivers;
     };
 
     struct SendJob {
@@ -120,19 +128,24 @@ namespace owl::detail {
     template <typename S>
     static void on_context_init(h2o_handler_t* handler, h2o_context_t* ctx) {
         const auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(handler);
+
         // The scheduler, its hop and the reactor are born with the Context so
         // extraction hands handlers a working loop from the first request on;
         // the hop is registered on this context's queue, which is what makes
         // post() safe from the pool threads.
         auto* const context = new Context<S>{dispatcher->state, ctx->loop};
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
+
         // The pools are built in place: neither copyable nor movable, and
         // each holds a handle to this Context's own reactor or scheduler.
 #ifdef OWL_ENABLE_POSTGRESQL
-        if (dispatcher->sql.psql) context->psql.emplace(*dispatcher->sql.psql, sql::reactor_ref{context->reactor});
+        if (dispatcher->drivers.psql) context->psql.emplace(*dispatcher->drivers.psql, sql::reactor_ref{context->reactor});
 #endif
 #ifdef OWL_ENABLE_SQLITE
-        if (dispatcher->sql.sqlite) context->sqlite.emplace(*dispatcher->sql.sqlite, sql::scheduler_ref{context->loop});
+        if (dispatcher->drivers.sqlite) context->sqlite.emplace(*dispatcher->drivers.sqlite, sql::scheduler_ref{context->loop});
+#endif
+#ifdef OWL_ENABLE_REDIS
+        if (dispatcher->drivers.redis) context->redis.emplace(*dispatcher->drivers.redis, coro::reactor_ref{context->reactor});
 #endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
@@ -219,17 +232,22 @@ namespace owl::detail {
         const Router<S>* const router,
         const MiddlewareChain<S>* const server_layers,
         std::shared_ptr<S> state,
-        SqlConfigs sql
+        DriverConfigs drivers
     ) {
         auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(h2o_create_handler(pathconf, sizeof(Dispatcher<S>)));
+
+        //
         dispatcher->super.on_req = &on_req<S>;
         dispatcher->super.dispose = &on_dispose<S>;
         dispatcher->super.on_context_init = &on_context_init<S>;
         dispatcher->super.on_context_dispose = &on_context_dispose<S>;
+
+        //
         dispatcher->router = router;
         dispatcher->server_layers = server_layers;
         std::construct_at(&dispatcher->state, std::move(state));
-        std::construct_at(&dispatcher->sql, std::move(sql));
+        std::construct_at(&dispatcher->drivers, std::move(drivers));
+
         return dispatcher;
     }
 }

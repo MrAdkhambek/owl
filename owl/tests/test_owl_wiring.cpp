@@ -1,8 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <thread>
 
 #include <coro/run/sync_wait.h>
@@ -11,6 +14,9 @@
 #include <h2o.h>
 
 #include <sql/sql.h>
+#ifdef OWL_ENABLE_REDIS
+#include <redis/redis.h>
+#endif
 #include <owl/core/state.h>
 #include <owl/detail.h>
 #include <owl/extract/from_context.h>
@@ -21,6 +27,21 @@
 namespace {
     struct App final {
     };
+
+#ifdef OWL_ENABLE_REDIS
+    // OWL_TEST_REDIS=host:port; port 1 when unset, so a test that wires the
+    // client without a server still builds a Context.
+    redis::config live_redis() {
+        redis::config cfg{.port = 1};
+        const char* const env = std::getenv("OWL_TEST_REDIS");
+        if (env == nullptr) return cfg;
+        const std::string_view spec{env};
+        const auto colon = spec.rfind(':');
+        cfg.host = std::string{spec.substr(0, colon)};
+        cfg.port = colon == std::string_view::npos ? 6379 : static_cast<std::uint16_t>(std::stoi(std::string{spec.substr(colon + 1)}));
+        return cfg;
+    }
+#endif
 
     // An h2o context wired the way Server wires a worker -- the same
     // make_dispatcher, then h2o_context_init running on_context_init --
@@ -33,12 +54,12 @@ namespace {
         h2o_req_t req{};
         owl::detail::Dispatcher<App>* dispatcher = nullptr;
 
-        Fixture(const bool wire_sqlite, const char* const psql_dsn) {
+        Fixture(const bool wire_sqlite, const char* const psql_dsn, const bool wire_redis = false) {
             h2o_config_init(&globalconf);
             auto* const hostconf = h2o_config_register_host(&globalconf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             auto* const pathconf = h2o_config_register_path(hostconf, "/", 0);
 
-            owl::detail::SqlConfigs configs;
+            owl::detail::DriverConfigs configs;
 #ifdef OWL_ENABLE_POSTGRESQL
             if (psql_dsn != nullptr) configs.psql = sql::psql::config{.dsn = psql_dsn};
 #else
@@ -48,6 +69,11 @@ namespace {
             if (wire_sqlite) configs.sqlite = sql::sqlite::config{.path = db.path.string()};
 #else
             (void)wire_sqlite;
+#endif
+#ifdef OWL_ENABLE_REDIS
+            if (wire_redis) configs.redis = live_redis();
+#else
+            (void)wire_redis;
 #endif
             dispatcher = owl::detail::make_dispatcher<App>(pathconf, nullptr, nullptr, std::make_shared<App>(), std::move(configs));
 
@@ -162,6 +188,40 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
 }
 #endif
 
+#ifdef OWL_ENABLE_REDIS
+TEST(OwlWiring, UnwiredRedisClientKicks500) {
+    Fixture fx{false, nullptr, false};
+    const auto* const request = owl::Request::from(&fx.req);
+    const auto rd = owl::fromContextRef<redis::client>(fx.context(), *request);
+    EXPECT_FALSE(rd.has_value());
+    EXPECT_EQ(rd.error().status(), 500);
+}
+
+TEST(OwlWiring, RedisCommandCompletesOnTheWorkerLoop) {
+    if (std::getenv("OWL_TEST_REDIS") == nullptr) GTEST_SKIP() << "OWL_TEST_REDIS is not set";
+    Fixture fx{false, nullptr, true};
+    const auto& context = fx.context();
+    ASSERT_TRUE(context.redis.has_value());
+
+    const auto* const request = owl::Request::from(&fx.req);
+    const auto rd = owl::fromContextRef<redis::client>(context, *request);
+    ASSERT_TRUE(rd.has_value());
+    EXPECT_EQ(*rd, &*context.redis);
+
+    const auto all = owl::extract_all<const redis::client&>(context, *request);
+    ASSERT_TRUE(all.has_value());
+
+    std::thread::id resumed_on;
+    const auto loop_id = fx.run_on_loop([&]() -> coro::task<> {
+        const auto r = co_await redis::command(**rd, "PING");
+        resumed_on = std::this_thread::get_id();
+        EXPECT_EQ(r.as<std::string>(), "PONG");
+        EXPECT_TRUE((*rd)->connected());
+    });
+    EXPECT_EQ(resumed_on, loop_id);
+}
+#endif
+
 TEST(OwlWiring, BuilderAcceptsTheDriverConfigs) {
     const sql_test::temp_db db{"builder"};
     // Preprocessor lines inside one expression: the chain stays a single
@@ -174,6 +234,9 @@ TEST(OwlWiring, BuilderAcceptsTheDriverConfigs) {
 #endif
 #ifdef OWL_ENABLE_POSTGRESQL
                                         .with_psql({.dsn = "postgres://127.0.0.1:1/nope"})
+#endif
+#ifdef OWL_ENABLE_REDIS
+                                        .with_redis({.port = 1})
 #endif
                                         .build_with(std::make_shared<App>());
     EXPECT_NE(server.port(), 0);
