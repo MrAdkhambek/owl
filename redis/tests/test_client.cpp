@@ -95,6 +95,30 @@ TEST(Client, PipelinesConcurrentCommandsAndAnswersInOrder) {
     srv.join();
 }
 
+// Three or more pipelined replies buffered at once: the head passes the
+// baton from inside a drain loop, which is where a waiter sitting in two
+// queues on one link loses the rest of the FIFO.
+TEST(Client, FourPipelinedCommandsWithRepliesBufferedTogether) {
+    fake_server srv{{script{
+        expect{hello}, send_bytes{hello_ok}, expect{ping}, send_bytes{pong},
+        expect{cmd({"GET", "a"}) + cmd({"GET", "b"}) + cmd({"GET", "c"}) + cmd({"GET", "d"})},
+        send_bytes{"$1\r\n1\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n"},
+        expect_eof{}}}};
+    fixture fx;
+    redis::client c{{.port = srv.port()}, fx.io};
+    coro::sync_wait([&]() -> coro::task<> {
+        (void)co_await run(c, {"PING"});
+        const auto [a, b, cc, d] = co_await coro::when_all(run(c, {"GET", "a"}), run(c, {"GET", "b"}), run(c, {"GET", "c"}), run(c, {"GET", "d"}));
+        EXPECT_EQ(status(a), "1");
+        EXPECT_EQ(status(b), "2");
+        EXPECT_EQ(status(cc), "3");
+        EXPECT_EQ(status(d), "4");
+        EXPECT_EQ(c.in_flight(), 0u);
+    }());
+    c.close();
+    srv.join();
+}
+
 TEST(Client, CallersArrivingWhileOpeningAllComplete) {
     fake_server srv{{script{expect{hello}, send_bytes{hello_ok}, expect{ping + ping}, send_bytes{pong + pong}, expect_eof{}}}};
     fixture fx;

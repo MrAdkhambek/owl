@@ -119,8 +119,13 @@ namespace redis {
         }
 
     private:
+        // Two links, because a waiter can sit in two queues at once: the
+        // head stays in replies_ while it reads, and a baton pass from
+        // inside a drain loop parks that same head on ready_. One link
+        // shared by both would sever the FIFO behind it.
         struct waiter final {
             waiter* next{};
+            waiter* ready_next{};
             std::coroutine_handle<> h{};
             std::optional<detail::clock::time_point> deadline{};
             std::optional<error> failure{};
@@ -128,7 +133,9 @@ namespace redis {
         };
 
         // Intrusive FIFO over the waiter nodes, which live in the parked
-        // coroutines' frames: nothing is allocated to wait.
+        // coroutines' frames: nothing is allocated to wait. Link selects
+        // which pointer threads the queue.
+        template <waiter* waiter::*Link>
         struct waiter_queue final {
             waiter* head{};
             waiter* tail{};
@@ -139,8 +146,8 @@ namespace redis {
             }
 
             void push(waiter* const w) noexcept {
-                w->next = nullptr;
-                if (tail != nullptr) tail->next = w;
+                w->*Link = nullptr;
+                if (tail != nullptr) tail->*Link = w;
                 else head = w;
                 tail = w;
                 ++size;
@@ -149,9 +156,9 @@ namespace redis {
             [[nodiscard]] waiter* pop() noexcept {
                 waiter* const w = head;
                 if (w == nullptr) return nullptr;
-                head = w->next;
+                head = w->*Link;
                 if (head == nullptr) tail = nullptr;
-                w->next = nullptr;
+                w->*Link = nullptr;
                 --size;
                 return w;
             }
@@ -261,9 +268,9 @@ namespace redis {
         config cfg_;
         coro::reactor_ref io_;
         mutable std::unique_ptr<connection> conn_;
-        mutable waiter_queue connects_;
-        mutable waiter_queue replies_;
-        mutable waiter_queue ready_;
+        mutable waiter_queue<&waiter::next> connects_;
+        mutable waiter_queue<&waiter::next> replies_;
+        mutable waiter_queue<&waiter::ready_next> ready_;
         mutable bool opening_ = false;
         mutable bool closed_ = false;
         mutable bool draining_ = false;
