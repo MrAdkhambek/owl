@@ -6,11 +6,12 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # owl as a subproject, the way an application vendors it: the repository
-# two levels up, built here as a consumer -- no tests, sqlite on, the
-# other drivers off. After `cmake --install` of owl, the same two targets
-# come from `find_package(owl REQUIRED)` instead.
+# two levels up, built here as a consumer -- no tests, sqlite and redis
+# on, postgres off. After `cmake --install` of owl, the same targets come
+# from `find_package(owl REQUIRED)` instead.
 option(BUILD_TESTING "owl's own tests; off for a consumer" OFF)
 set(OWL_ENABLE_SQLITE ON CACHE BOOL "the example stores its data in sqlite")
+set(OWL_ENABLE_REDIS ON CACHE BOOL "the example keeps sessions and login counters in redis")
 add_subdirectory(../.. owl EXCLUDE_FROM_ALL)
 
 # One translation unit per module, axum style; headers include each other
@@ -22,4 +23,4 @@ add_executable(rest
         src/rest/routes/auth.cpp
         src/rest/routes/posts.cpp)
 target_include_directories(rest PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-target_link_libraries(rest PRIVATE owl::owl owl::sql)
+target_link_libraries(rest PRIVATE owl::owl owl::sql owl::redis)

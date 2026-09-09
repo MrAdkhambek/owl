@@ -1,7 +1,9 @@
 #include "rest/auth.h"
 
+#include <chrono>
 #include <cstddef>
 #include <stdexcept>
+#include <string>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -58,9 +60,20 @@ namespace rest {
         return random_hex(32);
     }
 
-    coro::task<std::optional<std::int64_t>> user_of(const Db& db, const Bearer bearer) {
-        const auto r = co_await sql::query<"SELECT user_id FROM sessions WHERE token = $1">(db, bearer.token);
-        if (r.rows() == 0) co_return std::nullopt;
-        co_return r[0][0].as<std::int64_t>();
+    coro::task<> store_session(const Cache& cache, const std::string_view token, const std::int64_t user_id) {
+        co_await redis::set(cache, "session:" + std::string{token}, std::to_string(user_id), session_ttl);
+    }
+
+    coro::task<bool> login_throttled(const Cache& cache, const std::string_view username) {
+        const std::string key = "login:" + std::string{username};
+        const auto attempts = co_await redis::incr(cache, key);
+        // The first attempt starts the minute; the counter dies with it.
+        if (attempts == 1) (void)co_await redis::expire(cache, key, std::chrono::minutes{1});
+        co_return attempts > login_attempts_per_minute;
+    }
+
+    coro::task<std::optional<std::int64_t>> user_of(const Cache& cache, const Bearer bearer) {
+        const auto r = co_await redis::command(cache, "GET", "session:" + std::string{bearer.token});
+        co_return r.as<std::optional<std::int64_t>>();
     }
 }

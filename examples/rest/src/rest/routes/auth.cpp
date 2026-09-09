@@ -37,11 +37,15 @@ namespace rest::auth {
 
     coro::task<owl::Response> login(
         const Db& db,
+        const Cache& cache,
         const owl::State<App> app,
         const owl::loop_scheduler& loop,
         const owl::Json<Credentials> body
     ) {
         const auto& [username, password] = body.value;
+        // Counted before the password check, so guessing costs attempts
+        // whether or not the name exists.
+        if (co_await login_throttled(cache, username)) co_return fail(429, "too many attempts, try again in a minute");
         const auto found = co_await sql::query<"SELECT id, password FROM users WHERE username = $1">(db, username);
         if (found.rows() == 0) co_return fail(401, "bad credentials");
         const auto [id, stored] = found[0].as<std::int64_t, std::string>();
@@ -50,7 +54,7 @@ namespace rest::auth {
         if (!ok) co_return fail(401, "bad credentials");
 
         const auto token = new_token();
-        (void)co_await sql::execute<"INSERT INTO sessions(token, user_id) VALUES ($1, $2)">(db, token, id);
+        co_await store_session(cache, token, id);
         co_return owl::Response::json(nlohmann::json{{"token", token}});
     }
 

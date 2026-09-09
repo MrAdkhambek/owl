@@ -1,8 +1,9 @@
 #pragma once
 
-// Passwords, tokens, and the Bearer extractor: axum's auth module and its
-// extractor in one place.
+// Passwords, tokens, sessions, the login throttle, and the Bearer
+// extractor: axum's auth module and its extractor in one place.
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <optional>
@@ -26,14 +27,24 @@ namespace rest {
     // 32 random bytes, in hex.
     [[nodiscard]] std::string new_token();
 
+    // A session is session:<token> -> user id in redis, for a day; redis
+    // drops it when the day is up, so there is nothing to sweep.
+    inline constexpr std::chrono::hours session_ttl{24};
+    [[nodiscard]] coro::task<> store_session(const Cache& cache, std::string_view token, std::int64_t user_id);
+
+    // login:<username> counts attempts for a minute. true means over the
+    // limit; the caller answers 429.
+    inline constexpr int login_attempts_per_minute = 10;
+    [[nodiscard]] coro::task<bool> login_throttled(const Cache& cache, std::string_view username);
+
     // The token from the Authorization header. A missing or malformed
     // header kicks 401 before the handler runs.
     struct Bearer {
         std::string_view token;
     };
 
-    // The user a token stands for, or nothing.
-    [[nodiscard]] coro::task<std::optional<std::int64_t>> user_of(const Db& db, Bearer bearer);
+    // The user a token stands for, or nothing: unknown or expired.
+    [[nodiscard]] coro::task<std::optional<std::int64_t>> user_of(const Cache& cache, Bearer bearer);
 }
 
 template <>

@@ -15,7 +15,7 @@
 namespace rest::posts {
     coro::task<owl::Response> list(const Db& db);
     coro::task<owl::Response> show(const Db& db, owl::Path<"id", std::int64_t> id);
-    coro::task<owl::Response> create(const Db& db, Bearer bearer, owl::Json<NewPost> body);
+    coro::task<owl::Response> create(const Db& db, const Cache& cache, Bearer bearer, owl::Json<NewPost> body);
 
     [[nodiscard]] owl::Router<App> router();
 }

@@ -22,8 +22,8 @@ namespace rest::posts {
         co_return owl::Response::json(post_json(r[0]));
     }
 
-    coro::task<owl::Response> create(const Db& db, const Bearer bearer, const owl::Json<NewPost> body) {
-        const auto user = co_await user_of(db, bearer);
+    coro::task<owl::Response> create(const Db& db, const Cache& cache, const Bearer bearer, const owl::Json<NewPost> body) {
+        const auto user = co_await user_of(cache, bearer);
         if (!user) co_return fail(401, "unknown token");
         if (body.value.title.empty()) co_return fail(422, "title required");
         const auto r = co_await sql::query<"INSERT INTO posts(user_id, title, body) VALUES ($1, $2, $3) RETURNING id">(

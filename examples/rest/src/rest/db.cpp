@@ -19,9 +19,9 @@ namespace rest {
             (void)co_await sql::execute<
                 "CREATE TABLE IF NOT EXISTS users("
                 "  id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, password TEXT NOT NULL)">(db);
-            (void)co_await sql::execute<
-                "CREATE TABLE IF NOT EXISTS sessions("
-                "  token TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id))">(db);
+            // Sessions moved to redis, where they expire on their own; a
+            // database from before that still carries the table.
+            (void)co_await sql::execute<"DROP TABLE IF EXISTS sessions">(db);
             (void)co_await sql::execute<
                 "CREATE TABLE IF NOT EXISTS posts("
                 "  id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id),"
