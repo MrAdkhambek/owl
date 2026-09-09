@@ -342,8 +342,7 @@ namespace sql {
             // else is the statement's problem and the connection stays.
             [[nodiscard]] error failure(const int rc) noexcept {
                 const int primary = rc & 0xff;
-                const bool broken = primary == SQLITE_IOERR || primary == SQLITE_MISUSE
-                    || primary == SQLITE_NOMEM || primary == SQLITE_CORRUPT;
+                const bool broken = primary == SQLITE_IOERR || primary == SQLITE_MISUSE || primary == SQLITE_NOMEM || primary == SQLITE_CORRUPT;
                 if (broken) ok_ = false;
                 return error{broken ? error_kind::connection : error_kind::query, sqlite3_errmsg(db_), {}, rc};
             }

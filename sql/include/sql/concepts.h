@@ -54,18 +54,22 @@ namespace sql {
     // failed. Every failure is data: open and execute answer expected.
     template <typename D>
     concept driver = requires {
-        typename D::config;
-        typename D::io;
-        typename D::connection;
-        typename D::result;
-    } && result_like<typename D::result>
-      && std::convertible_to<decltype(std::declval<const typename D::config&>().connections), unsigned>
-      && requires(typename D::connection& c, const typename D::config& cfg, const typename D::io& io) {
-        { D::connection::open(cfg, io) }
+            typename D::config;
+            typename D::io;
+            typename D::connection;
+            typename D::result;
+        } && result_like<typename D::result>
+        && std::convertible_to<decltype(std::declval<const typename D::config&>().connections), unsigned>
+        && requires(typename D::connection& c, const typename D::config& cfg, const typename D::io& io) {
+            {
+                D::connection::open(cfg, io)
+            }
             -> std::same_as<coro::task<std::expected<std::unique_ptr<typename D::connection>, error>>>;
-        { c.ok() } -> std::same_as<bool>;
-        { c.abandon() } noexcept;
-        { c.template execute<detail::probe_query>() }
+            { c.ok() } -> std::same_as<bool>;
+            { c.abandon() } noexcept;
+            {
+                c.template execute<detail::probe_query>()
+            }
             -> std::same_as<coro::task<std::expected<typename D::result, error>>>;
-    };
+        };
 }
