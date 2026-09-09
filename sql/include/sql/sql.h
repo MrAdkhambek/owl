@@ -15,3 +15,7 @@
 #ifdef OWL_ENABLE_SQLITE
 #include "sql/sqlite.h"
 #endif
+
+#ifdef OWL_ENABLE_POSTGRESQL
+#include "sql/psql.h"
+#endif

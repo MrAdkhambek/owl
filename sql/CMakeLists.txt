@@ -30,6 +30,7 @@ target_sources(sql INTERFACE
         include/sql/query.h
         include/sql/transaction.h
         include/sql/sqlite.h
+        include/sql/psql.h
         include/sql/detail/placeholders.h
         include/sql/detail/stmt_key.h
 )
@@ -186,6 +187,9 @@ if (BUILD_TESTING)
     sql_add_test(test_transaction)
     if (OWL_ENABLE_SQLITE)
         sql_add_test(sqlite/test_sqlite)
+    endif ()
+    if (OWL_ENABLE_POSTGRESQL)
+        sql_add_test(psql/test_psql)
     endif ()
     sql_add_compile_fail_test(rejects_arity_mismatch)
     sql_add_compile_fail_test(rejects_placeholder_hole)
