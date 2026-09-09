@@ -31,6 +31,7 @@ target_sources(redis INTERFACE
         include/redis/config.h
         include/redis/connection.h
         include/redis/detail/deadline.h
+        include/redis/client.h
 )
 
 find_package(PkgConfig REQUIRED)
@@ -86,4 +87,5 @@ if (BUILD_TESTING)
     redis_add_test(test_error)
     redis_add_test(test_reply)
     redis_add_test(test_connection)
+    redis_add_test(test_client)
 endif ()
