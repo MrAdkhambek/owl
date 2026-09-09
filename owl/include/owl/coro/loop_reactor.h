@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <unistd.h>
 #include <utility>
 #include <unordered_map>
