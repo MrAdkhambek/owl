@@ -28,6 +28,9 @@ target_sources(redis INTERFACE
         include/redis/redis.h
         include/redis/error.h
         include/redis/reply.h
+        include/redis/config.h
+        include/redis/connection.h
+        include/redis/detail/deadline.h
 )
 
 find_package(PkgConfig REQUIRED)
@@ -82,4 +85,5 @@ if (BUILD_TESTING)
 
     redis_add_test(test_error)
     redis_add_test(test_reply)
+    redis_add_test(test_connection)
 endif ()

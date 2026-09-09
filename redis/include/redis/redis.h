@@ -5,3 +5,5 @@
 
 #include "redis/error.h"
 #include "redis/reply.h"
+#include "redis/config.h"
+#include "redis/connection.h"
