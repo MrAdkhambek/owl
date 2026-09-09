@@ -76,7 +76,7 @@ owl::Response login(owl::RequestView) {
 | `State<T>`                           | router state            | 500                 |
 | `loop_scheduler`                     | the worker's event loop, bound with no copy when taken as `const&` | 500                 |
 | `const sql::pool<sql::psql>&`        | the worker's postgres pool (`-DOWL_ENABLE_POSTGRESQL=ON`) | 500                 |
-| `const sql::pool<sql::sqlite>&`      | the worker's sqlite pool (`-DOWL_ENABLE_SQLITE=ON`)       | 500                 |
+| `const sql::pool<sql::sqlite>&`      | the worker's sqlite pool (on by default)                  | 500                 |
 
 A custom extractor is one `FromContext` specialization — the built-ins in `extract/from_context.h` are the same protocol, and make good reference. The parameter type is the value the handler receives; the specialization answers either that value or a `KickToken`, which carries any status, so `401` needs no special support:
 
@@ -162,7 +162,7 @@ See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_
 
 ## SQL
 
-See [`sql/README.md`](../sql/README.md). With `-DOWL_ENABLE_POSTGRESQL=ON` and/or `-DOWL_ENABLE_SQLITE=ON`, `owl::owl` pulls `owl::sql`, the builder gains `with_psql(sql::psql::config)` and `with_sqlite(sql::sqlite::config)`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
+See [`sql/README.md`](../sql/README.md). With a driver enabled (SQLite is, by default; Postgres with `-DOWL_ENABLE_POSTGRESQL=ON`), `owl::owl` pulls `owl::sql`, the builder gains `with_psql(sql::psql::config)` and `with_sqlite(sql::sqlite::config)`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
 
 ## Server
 

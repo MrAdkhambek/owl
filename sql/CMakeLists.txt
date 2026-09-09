@@ -59,7 +59,7 @@ if (OWL_ENABLE_SQLITE)
                 ERROR_QUIET)
     endif ()
     find_package(SQLite3 REQUIRED)
-    target_link_libraries(sql INTERFACE SQLite::SQLite3)
+    target_link_libraries(sql INTERFACE SQLite3::SQLite3)
     target_compile_definitions(sql INTERFACE OWL_ENABLE_SQLITE)
 endif ()
 

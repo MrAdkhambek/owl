@@ -27,9 +27,9 @@ coro::task<owl::Response> get_user(const sql::pool<sql::psql>& pg, owl::Path<"id
 }
 ```
 
-Link `owl::sql` (pulls `owl::coro`, `owl::fstr`, and libpq / sqlite3 per option). Build with
-`-DOWL_ENABLE_POSTGRESQL=ON` and/or `-DOWL_ENABLE_SQLITE=ON`. `sql/sql.h` is the umbrella;
-each driver header comes in only under its option.
+Link `owl::sql` (pulls `owl::coro`, `owl::fstr`, and sqlite3 / libpq per driver). SQLite is on
+by default (`-DOWL_ENABLE_SQLITE=OFF` drops it); Postgres needs `-DOWL_ENABLE_POSTGRESQL=ON`.
+`sql/sql.h` is the umbrella; each driver header comes in only under its option.
 
 ## Queries
 
