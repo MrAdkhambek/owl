@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <string>
 
+#include <coro/run/resume_on.h>
+#include <coro/run/schedule_on.h>
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
@@ -20,9 +22,9 @@ namespace rest::auth {
         if (username.empty()) co_return fail(422, "username required");
         if (password.size() < 12) co_return fail(422, "password must be at least 12 characters");
 
-        co_await app->hashing.schedule();
-        const auto hashed = hash_password(password);
-        co_await loop.schedule();
+        // The hash on the hashing pool, the rest of the handler back on
+        // this worker: one piped expression instead of two hops.
+        const auto hashed = co_await (hash_password(password) | coro::schedule_on(app->hashing) | coro::resume_on(loop));
 
         const auto inserted = co_await sql::try_query<"INSERT INTO users(username, password) VALUES ($1, $2) RETURNING id">(
             db, username, hashed);
@@ -44,9 +46,7 @@ namespace rest::auth {
         if (found.rows() == 0) co_return fail(401, "bad credentials");
         const auto [id, stored] = found[0].as<std::int64_t, std::string>();
 
-        co_await app->hashing.schedule();
-        const bool ok = verify_password(password, stored);
-        co_await loop.schedule();
+        const bool ok = co_await (verify_password(password, stored) | coro::schedule_on(app->hashing) | coro::resume_on(loop));
         if (!ok) co_return fail(401, "bad credentials");
 
         const auto token = new_token();

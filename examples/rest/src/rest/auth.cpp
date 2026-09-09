@@ -42,15 +42,16 @@ namespace rest {
         }
     }
 
-    std::string hash_password(const std::string_view password) {
+    coro::task<std::string> hash_password(const std::string password) {
         const auto salt = random_hex(16);
-        return salt + ":" + derive(password, salt);
+        co_return salt + ":" + derive(password, salt);
     }
 
-    bool verify_password(const std::string_view password, const std::string_view stored) {
+    coro::task<bool> verify_password(const std::string password, const std::string stored) {
         const auto colon = stored.find(':');
-        if (colon == std::string_view::npos) return false;
-        return same(derive(password, stored.substr(0, colon)), stored.substr(colon + 1));
+        if (colon == std::string::npos) co_return false;
+        const std::string_view view{stored};
+        co_return same(derive(password, view.substr(0, colon)), view.substr(colon + 1));
     }
 
     std::string new_token() {

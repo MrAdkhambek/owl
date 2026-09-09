@@ -16,8 +16,12 @@
 
 namespace rest {
     // PBKDF2-HMAC-SHA256 with a fresh salt, stored as "salt:key" in hex.
-    [[nodiscard]] std::string hash_password(std::string_view password);
-    [[nodiscard]] bool verify_password(std::string_view password, std::string_view stored);
+    // Tasks rather than functions, so a handler pipes them onto the hashing
+    // pool and back in one expression:
+    //
+    //   co_await (hash_password(pw) | coro::schedule_on(app->hashing) | coro::resume_on(loop))
+    [[nodiscard]] coro::task<std::string> hash_password(std::string password);
+    [[nodiscard]] coro::task<bool> verify_password(std::string password, std::string stored);
 
     // 32 random bytes, in hex.
     [[nodiscard]] std::string new_token();

@@ -8,15 +8,16 @@ laid out the way an axum project is.
 | `src/rest/main.cpp` | `main.rs` | migrations, the composed router, the server |
 | `src/rest/app.h` | `state.rs` | `App`, the state every handler can take as `owl::State<App>` |
 | `src/rest/db.h/.cpp` | `db.rs` | the schema, applied once at startup through a standalone pool |
-| `src/rest/auth.h/.cpp` | `auth.rs` + an extractor | PBKDF2 password hashing, session tokens, the `Bearer` extractor |
+| `src/rest/auth.h/.cpp` | `auth.rs` + an extractor | PBKDF2 password hashing as tasks, session tokens, the `Bearer` extractor |
 | `src/rest/models.h` | `models.rs` | request bodies (`Credentials`, `NewPost`) and the post JSON |
 | `src/rest/error.h` | `error.rs` | `fail(status, message)` -> `{"error": "..."}` |
 | `src/rest/routes/auth.h/.cpp` | `routes/auth.rs` | `POST /register`, `POST /login`, and their `router()` |
 | `src/rest/routes/posts.h/.cpp` | `routes/posts.rs` | `GET /`, `POST /`, `GET /{id}`, and their `router()` |
 
 Each module owns a router; `main.cpp` nests them under `/auth` and `/posts`.
-SQLite comes from each worker's pool (`const Db&`); the password hashing
-runs on a small thread pool and hops back to the worker.
+SQLite comes from each worker's pool (`const Db&`). Password hashing is a
+task piped onto a small thread pool and back:
+`co_await (hash_password(pw) | coro::schedule_on(app->hashing) | coro::resume_on(loop))`.
 
 ## Build and run
 
