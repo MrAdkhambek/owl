@@ -41,8 +41,13 @@ namespace owl {
 
         pool_map() = default;
 
+        // The from_range constructor ranges::to looks for. Filled by hand
+        // rather than forwarded to the base: libstdc++ 14 has no from_range
+        // constructor on unordered_map yet, and one insert per pair is what
+        // it would do anyway.
         template <std::ranges::input_range R> requires std::convertible_to<std::ranges::range_reference_t<R>, value_type>
-        pool_map(std::from_range_t, R&& r) : base(std::from_range, std::forward<R>(r)) {
+        pool_map(std::from_range_t, R&& r) {
+            for (auto&& kv : r) base::insert(static_cast<value_type>(std::forward<decltype(kv)>(kv)));
         }
 
         [[nodiscard]] const std::string_view* find_value(const std::string_view key) const noexcept {

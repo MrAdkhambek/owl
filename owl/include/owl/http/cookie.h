@@ -18,7 +18,9 @@ namespace owl {
         std::optional<std::chrono::seconds> max_age{};
         bool http_only{false};
         bool secure{false};
-        same_site same_site{};
+        // Qualified: a member named after its type is fine, but GCC refuses the
+        // unqualified spelling ([basic.scope.class], -Wchanges-meaning).
+        owl::same_site same_site{};
     };
 
     [[nodiscard]] inline std::string_view to_string(const same_site policy) noexcept {
