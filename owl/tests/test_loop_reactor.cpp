@@ -1,6 +1,9 @@
 #include <gtest/gtest.h>
 
+#include <cerrno>
 #include <chrono>
+#include <fcntl.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 #include <coro/run/sync_wait.h>
@@ -91,6 +94,32 @@ namespace {
         reactor.release(fds[0]);  // detach the h2o socket before the fd dies
         ::close(fds[0]);
         ::close(fds[1]);
+        h2o_evloop_destroy(loop);
+    }
+
+    // A write wait that times out is the psql connect_timeout against a
+    // silent host: the driver then releases the fd. h2o has no way to cancel
+    // a pending notify_write, so release must cope with one still armed.
+    TEST(LoopReactor, WriteWaitTimeoutCanBeReleased) {
+        h2o_loop_t* const loop = h2o_evloop_create();
+        const owl::loop_reactor reactor{loop};
+        int fds[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+        ASSERT_EQ(::fcntl(fds[0], F_SETFL, O_NONBLOCK), 0);
+        char junk[4096] = {};
+        while (::write(fds[0], junk, sizeof junk) > 0) {
+        }
+        ASSERT_EQ(errno, EAGAIN);
+
+        auto body = [&]() -> coro::task<coro::wait_status> {
+            co_return co_await reactor.wait(fds[0], coro::interest::write, 20ms);
+        };
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::timeout);
+
+        reactor.release(fds[0]);
+        ::close(fds[0]);
+        ::close(fds[1]);
+        h2o_evloop_run(loop, 0);
         h2o_evloop_destroy(loop);
     }
 

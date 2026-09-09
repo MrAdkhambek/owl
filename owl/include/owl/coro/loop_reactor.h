@@ -104,14 +104,23 @@ namespace owl {
         // callback, and the awaiter's destructor path.
         static void finish(pending* const req, const coro::wait_status status) {
             if (req->owner != nullptr) req->owner->req = nullptr;
-            if (req->sock != nullptr) {
-                req->sock->data = nullptr;
-                h2o_socket_read_stop(req->sock);
-            }
+            if (req->sock != nullptr) disarm(req->sock);
             if (h2o_timer_is_linked(&req->timer)) h2o_timer_unlink(&req->timer);
             req->status = status;
             const auto cont = std::exchange(req->cont, nullptr);
             cont.resume();
+        }
+
+        // Stops both notifications a wait may have armed. read_stop is h2o's
+        // own API; notify_write has no cancel, and a write wait that ends by
+        // timeout (psql's connect_timeout against a silent host) leaves the
+        // callback set, which h2o_socket_export then asserts on. Clearing it
+        // here is safe: the callback is ours, and read_stop has just queued
+        // the state sync that drops the write poll.
+        static void disarm(h2o_socket_t* const sock) {
+            sock->data = nullptr;
+            h2o_socket_read_stop(sock);
+            if (sock->_cb.write == &loop_reactor::on_ready) sock->_cb.write = nullptr;
         }
 
         static void on_ready(h2o_socket_t* const sock, const char* const err) {
@@ -172,10 +181,7 @@ namespace owl {
             ~wait_awaiter() {
                 if (req.cont == nullptr) return;
                 if (req.owner != nullptr && req.owner->req == &req) req.owner->req = nullptr;
-                if (req.sock != nullptr) {
-                    if (req.sock->data == &req) req.sock->data = nullptr;
-                    h2o_socket_read_stop(req.sock);
-                }
+                if (req.sock != nullptr && req.sock->data == &req) disarm(req.sock);
                 if (h2o_timer_is_linked(&req.timer)) h2o_timer_unlink(&req.timer);
             }
         };
