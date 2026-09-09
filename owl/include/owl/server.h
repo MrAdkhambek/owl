@@ -110,8 +110,7 @@ namespace owl {
                 if (!state) throw std::invalid_argument("Server: state is required");
                 if (!self.router_) throw std::invalid_argument("Server: router is required");
                 if (!self.config_) throw std::invalid_argument("Server: config is required");
-                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state),
-                              std::move(self.drivers_)};
+                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state), std::move(self.drivers_)};
             }
 
         private:
@@ -142,32 +141,47 @@ namespace owl {
         }
 
     private:
-        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers,
-               std::shared_ptr<S> state, detail::DriverConfigs drivers)
-            : router_(std::move(router)),
-              config_(std::move(config)),
-              layers_(std::move(layers)),
-              state_(std::move(state)) {
+        // Binds before returning: a bad address or a taken port throws from
+        // build_with, never at start(). Afterwards port() reports the resolved
+        // port even for a config port of 0.
+        Server(
+            std::unique_ptr<Router<S>> router,
+            std::unique_ptr<Config> config,
+            MiddlewareChain<S> layers,
+            std::shared_ptr<S> state,
+            detail::DriverConfigs drivers
+        ) : router_(std::move(router)),
+            config_(std::move(config)),
+            layers_(std::move(layers)),
+            state_(std::move(state)) {
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            //
+            // A peer closing mid-write would otherwise SIGPIPE the process; ignored, the write
+            // merely fails and h2o tears the connection down. threads == 0 would mean no worker
+            // ever accepts, so it becomes 1.
             ////////////////////////////////////////////////////////////////////////////////////////////////
             std::signal(SIGPIPE, SIG_IGN);
             h2o_config_init(&globalconf_);
             const unsigned count = config_->threads == 0 ? 1 : config_->threads;
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            //
+            // One host on any port (65535): as the only registered host it doubles as h2o's fallback,
+            // so every authority -- missing Host headers included -- resolves to it, and "/" matches
+            // every path. Host and path dispatch are out of the way; routing belongs to the Router.
             ////////////////////////////////////////////////////////////////////////////////////////////////
             h2o_hostconf_t* const hostconf = h2o_config_register_host(&globalconf_, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             h2o_pathconf_t* const pathconf = h2o_config_register_path(hostconf, "/", 0);
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            // create single universal handler
+            // The handler's memory is h2o's, freed with the config -- hence the dropped pointer. Must
+            // precede h2o_context_init: each context sizes its per-handler slot array from the
+            // handlers registered so far.
             ////////////////////////////////////////////////////////////////////////////////////////////////
             (void)detail::make_dispatcher<S>(pathconf, router_.get(), &layers_, state_, std::move(drivers));
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            // init workers
+            // h2o's concurrency model is loop-per-thread: each worker owns an event loop and a
+            // context, and its accept context points at that same loop, so connections it accepts
+            // are driven by this worker alone.
             ////////////////////////////////////////////////////////////////////////////////////////////////
             workers_.reserve(count);
             for (unsigned i = 0; i < count; ++i) {

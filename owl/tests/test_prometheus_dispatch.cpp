@@ -91,7 +91,7 @@ TEST_F(DispatchClear, RecordsMatchedRequest) {
     owl::detail::MatchedChains<App> chains{};
     const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &chains);
     ASSERT_NE(handler, nullptr);
-    const owl::Context<App> ctx{std::make_shared<App>()};
+    const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
     owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
     EXPECT_EQ(fixture.req.res.status, 200);
 
@@ -108,7 +108,7 @@ TEST_F(DispatchClear, RecordsKickedRequest) {
     owl::detail::MatchedChains<App> chains{};
     const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &chains);
     ASSERT_NE(handler, nullptr);
-    const owl::Context<App> ctx{std::make_shared<App>()};
+    const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
     owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
     EXPECT_EQ(fixture.req.res.status, 401);
 
@@ -122,7 +122,7 @@ TEST_F(DispatchClear, RecordsThrownHandlerAs500) {
     owl::detail::MatchedChains<App> chains{};
     const auto* const handler = router.match(owl::Method::Get, "/boom", *fixture.request, &chains);
     ASSERT_NE(handler, nullptr);
-    const owl::Context<App> ctx{std::make_shared<App>()};
+    const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
     owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
 
     const std::string body = owl::prometheus::dump();

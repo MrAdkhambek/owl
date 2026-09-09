@@ -159,7 +159,7 @@ TEST(Middleware, InjectsRouterState) {
                       .layer(with_state)
                       .route<"/ping">(owl::get(ping));
     Fixture fixture;
-    const owl::Context<App> ctx{std::make_shared<App>(App{.n = 9})};
+    const owl::Context<App> ctx{std::make_shared<App>(App{.n = 9}), nullptr};
     fixture.send(run_chain(router, fixture, "/ping", ctx));
     EXPECT_EQ(fixture.header("x-n"), "9");
 }
@@ -171,9 +171,8 @@ TEST(Middleware, ExtractsWiredLoopScheduler) {
     h2o_context_t loop_ctx{};
     h2o_context_init(&loop_ctx, h2o_evloop_create(), &conf);
 
-    owl::Context<App> ctx{std::make_shared<App>()};
+    owl::Context<App> ctx{std::make_shared<App>(), loop_ctx.loop};
     h2o_multithread_register_receiver(loop_ctx.queue, &ctx.hop, &owl::detail::on_loop_hop);
-    ctx.loop = owl::loop_scheduler{loop_ctx.loop, &ctx.hop};
 
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop));
     Fixture fixture;
@@ -200,8 +199,7 @@ TEST(Middleware, ExtractsWiredLoopScheduler) {
 TEST(Middleware, UnwiredLoopSchedulerKicks500) {
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop));
     Fixture fixture;
-    const owl::Context<App> ctx{std::make_shared<App>()};
-    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    fixture.send(run_chain(router, fixture, "/ping"));
     EXPECT_EQ(fixture.req.res.status, 500);
 }
 
@@ -212,9 +210,8 @@ TEST(Middleware, ExtractsLoopSchedulerByReference) {
     h2o_context_t loop_ctx{};
     h2o_context_init(&loop_ctx, h2o_evloop_create(), &conf);
 
-    owl::Context<App> ctx{std::make_shared<App>()};
+    owl::Context<App> ctx{std::make_shared<App>(), loop_ctx.loop};
     h2o_multithread_register_receiver(loop_ctx.queue, &ctx.hop, &owl::detail::on_loop_hop);
-    ctx.loop = owl::loop_scheduler{loop_ctx.loop, &ctx.hop};
 
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop_ref));
     Fixture fixture;
@@ -244,8 +241,7 @@ TEST(Middleware, ExtractsLoopSchedulerByReference) {
 TEST(Middleware, UnwiredLoopRefKicks500) {
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(with_loop_ref));
     Fixture fixture;
-    const owl::Context<App> ctx{std::make_shared<App>()};
-    fixture.send(run_chain(router, fixture, "/ping", ctx));
+    fixture.send(run_chain(router, fixture, "/ping"));
     EXPECT_EQ(fixture.req.res.status, 500);
 }
 
