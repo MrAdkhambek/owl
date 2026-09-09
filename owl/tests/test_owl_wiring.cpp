@@ -36,13 +36,13 @@ namespace {
         h2o_req_t req{};
         owl::detail::Dispatcher<App>* dispatcher = nullptr;
 
+        // Same order as Server: the handler is created before the context,
+        // because h2o_context_init sizes its per-handler slot array from the
+        // handlers registered so far and then runs every on_context_init.
         Fixture(const bool wire_sqlite, const char* const psql_dsn) {
             h2o_config_init(&globalconf);
             auto* const hostconf = h2o_config_register_host(&globalconf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             auto* const pathconf = h2o_config_register_path(hostconf, "/", 0);
-            h2o_context_init(&ctx, h2o_evloop_create(), &globalconf);
-            conn.ctx = &ctx;
-            conn.hosts = globalconf.hosts;
 
             dispatcher = reinterpret_cast<owl::detail::Dispatcher<App>*>(
                 h2o_create_handler(pathconf, sizeof(owl::detail::Dispatcher<App>)));
@@ -62,6 +62,10 @@ namespace {
             (void)wire_sqlite;
 #endif
 
+            h2o_context_init(&ctx, h2o_evloop_create(), &globalconf);
+            conn.ctx = &ctx;
+            conn.hosts = globalconf.hosts;
+
             h2o_mem_init_pool(&req.pool);
             req.conn = &conn;
             req.pathconf = pathconf;
@@ -69,8 +73,6 @@ namespace {
             req.query_at = SIZE_MAX;
             req.version = 0x101;
             req.res.content_length = SIZE_MAX;
-
-            dispatcher->super.on_context_init(&dispatcher->super, &ctx);
         }
 
         ~Fixture() {
@@ -159,8 +161,14 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
     const auto pg = owl::fromContextRef<sql::pool<sql::psql>>(context, *request);
     ASSERT_TRUE(pg.has_value());
 
+    // A handler already runs on the worker, so the psql pool arms the
+    // loop_reactor from the loop thread; this body starts on the test
+    // thread and must hop there first -- the reactor's h2o state is
+    // loop-thread-only. (The sqlite pool needs no hop: its first move is to
+    // the connection thread, and it comes back through the loop's queue.)
     std::thread::id resumed_on;
     const auto loop_id = fx.run_on_loop([&]() -> coro::task<> {
+        co_await context.loop.schedule();
         const auto r = co_await sql::query<"SELECT $1::int AS answer">(**pg, 42);
         resumed_on = std::this_thread::get_id();
         EXPECT_EQ(r[0]["answer"].as<int>(), 42);
