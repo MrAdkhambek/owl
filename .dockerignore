@@ -1,0 +1,10 @@
+# Build context for examples/rest/Dockerfile is the repository root; keep
+# the local build trees and tooling out of it.
+cmake-build-*/
+**/build/
+.git/
+.idea/
+.claude/
+.superpowers/
+docs/
+**/.DS_Store
