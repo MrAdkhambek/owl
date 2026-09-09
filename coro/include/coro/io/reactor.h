@@ -88,6 +88,7 @@ namespace coro {
             // Handed to the thread on submit; the thread moves them
             // into inflight once armed.
             std::vector<request*> pending;
+            std::vector<request*> cancels;
             // Armed with the kernel; the set is what makes completion
             // exactly-once.
             std::unordered_set<request*> inflight;
@@ -157,6 +158,28 @@ namespace coro {
                 {
                     const std::lock_guard lock(mutex);
                     pending.push_back(req);
+                }
+                wake();
+            }
+
+            // Ends whatever is waiting on a descriptor right now. The
+            // requests are picked here, under the lock, and only they are
+            // queued -- naming the descriptor instead would let a cancel
+            // outlive the wait it was meant for and fell on whatever waited
+            // on that number next. Completing them is left to the reactor
+            // thread, so a waiter is resumed there like every other
+            // completion whichever thread asked. A descriptor with nothing
+            // waiting on it has nothing to cancel, and the call does
+            // nothing at all.
+            void cancel(const int fd) {
+                {
+                    const std::lock_guard lock(mutex);
+                    for (request* const req : pending) {
+                        if (req->fd == fd) cancels.push_back(req);
+                    }
+                    for (request* const req : inflight) {
+                        if (req->fd == fd) cancels.push_back(req);
+                    }
                 }
                 wake();
             }
@@ -308,6 +331,7 @@ namespace coro {
                     // mutex, so it is read under the mutex too and
                     // carried out as a local; the branch below runs
                     // unlocked.
+                    std::vector<request*> asked;
                     bool stop = false;
                     {
                         const std::lock_guard lock(mutex);
@@ -319,6 +343,12 @@ namespace coro {
                         } else {
                             batch.swap(pending);
                             for (request* req : batch) inflight.insert(req);
+                            // Already chosen by cancel(); the pointers are
+                            // only compared and erased below, never
+                            // dereferenced before complete() has won the
+                            // race for them, so one that finished in the
+                            // meantime is simply not found.
+                            asked.swap(cancels);
                         }
                     }
                     if (stop) {
@@ -335,6 +365,12 @@ namespace coro {
                     for (request* req : batch) {
                         if (!arm(req)) complete(req, wait_status::error);
                     }
+                    // After arming, never before: a request cancelled in
+                    // the same pass that armed it must be armed first, or
+                    // complete() resumes it -- freeing its frame, and with
+                    // it the request -- while the arm loop still holds the
+                    // pointer.
+                    for (request* const req : asked) complete(req, wait_status::cancelled);
 
 #if CORO_REACTOR_KQUEUE
                     struct kevent ev{};
@@ -428,6 +464,14 @@ namespace coro {
             if (fd < 0) co_return wait_status::error;
             park p{.owner = impl_.get(), .req = request{.fd = fd, .want = want, .timeout = timeout}};
             co_return co_await p;
+        }
+
+        // Ends a wait parked on this descriptor: the waiter resumes with
+        // wait_status::cancelled and the descriptor itself is untouched, so
+        // its owner still decides when to close it. Safe from any thread,
+        // and a no-op when nothing is parked on that fd.
+        void cancel(const int fd) const {
+            if (fd >= 0) impl_->cancel(fd);
         }
 
         // Parks for the timeout, then reports wait_status::timeout. A

@@ -130,6 +130,28 @@ TEST(Pubsub, RequestStopCompletesAPendingPullWithNullopt) {
     srv.join();
 }
 
+// The window a reactor cancel alone cannot cover: between one message and
+// the next pull nothing is parked, so there is no wait to cancel and the
+// stop has to be carried by the connection itself.
+TEST(Pubsub, AStopBetweenPullsIsNotLost) {
+    fake_server srv{{script{
+        expect{hello}, send_bytes{hello_ok},
+        expect{subscribe_news}, send_bytes{message("news", "hi")},
+        expect_eof{}}}};
+    fixture fx;
+    redis::client c{{.port = srv.port()}, fx.io};
+    std::stop_source stop;
+    coro::sync_wait([&]() -> coro::task<> {
+        auto gen = redis::subscribe(c, {"news"}, stop.get_token());
+        const auto first = co_await gen.next();
+        EXPECT_TRUE(first.has_value());
+        stop.request_stop();
+        const auto second = co_await gen.next();
+        EXPECT_FALSE(second.has_value());
+    }());
+    srv.join();
+}
+
 TEST(Pubsub, StopRequestedBeforeTheFirstPullEndsWithoutSubscribing) {
     fake_server srv{{script{expect{hello}, send_bytes{hello_ok}, expect_eof{}}}};
     fixture fx;

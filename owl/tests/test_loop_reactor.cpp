@@ -190,6 +190,54 @@ namespace {
         h2o_evloop_destroy(loop);
     }
 
+    // Ending a wait that would otherwise never finish, without closing
+    // anything: the subscriber connection's way out.
+    TEST(LoopReactor, CancelEndsAParkedWaitAndLeavesTheFdOpen) {
+        h2o_loop_t* const loop = h2o_evloop_create();
+        const owl::loop_reactor reactor{loop};
+        int fds[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+
+        // The cancel runs from the loop, which is where a handler's abort
+        // would reach it: a timer fires it while the read is parked.
+        auto body = [&]() -> coro::task<coro::wait_status> {
+            co_return co_await reactor.wait(fds[0], coro::interest::read, -1ms);
+        };
+        auto work = body();
+        work.start();
+        for (int i = 0; i < 50 && !work.done(); ++i) h2o_evloop_run(loop, 1);
+        EXPECT_FALSE(work.done());
+        reactor.cancel(fds[0]);
+        EXPECT_TRUE(work.done());
+        EXPECT_EQ(work.result(), coro::wait_status::cancelled);
+
+        // The descriptor is untouched, so a later wait on it still works.
+        EXPECT_EQ(::write(fds[1], "x", 1), 1);
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::ready);
+
+        reactor.release(fds[0]);
+        ::close(fds[0]);
+        ::close(fds[1]);
+        h2o_evloop_destroy(loop);
+    }
+
+    TEST(LoopReactor, CancelWithNothingParkedIsANoOp) {
+        h2o_loop_t* const loop = h2o_evloop_create();
+        const owl::loop_reactor reactor{loop};
+        int fds[2];
+        ASSERT_EQ(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds), 0);
+        reactor.cancel(fds[0]);
+        EXPECT_EQ(::write(fds[1], "x", 1), 1);
+        auto body = [&]() -> coro::task<coro::wait_status> {
+            co_return co_await reactor.wait(fds[0], coro::interest::read, 2s);
+        };
+        EXPECT_EQ(pump(loop, body()), coro::wait_status::ready);
+        reactor.release(fds[0]);
+        ::close(fds[0]);
+        ::close(fds[1]);
+        h2o_evloop_destroy(loop);
+    }
+
     TEST(LoopReactor, NullReactorAnswersErrorWithoutParking) {
         const owl::loop_reactor reactor;
 

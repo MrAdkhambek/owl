@@ -27,6 +27,7 @@
 // keeps by descriptor number, and the number must be out of its map before
 // hiredis frees it for the next connection to take.
 
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -99,6 +100,19 @@ namespace redis {
             return fd_;
         }
 
+        // Ends whatever wait this connection is parked in, and refuses
+        // any it has not started yet. The flag is what makes the second
+        // half true: a reactor cancel for a descriptor with nothing parked
+        // on it has nothing to do and is dropped, so a stop that lands in
+        // the window between deciding to read and parking would otherwise
+        // be lost and the read would wait forever. It is never cleared --
+        // a cancelled connection is being abandoned, not reused -- and it
+        // is atomic because the asking thread need not be this one.
+        void cancel_wait() const noexcept {
+            cancelled_.store(true, std::memory_order_release);
+            if (fd_ >= 0) io_.cancel(fd_);
+        }
+
         // Queues one command and writes what the socket takes now. false
         // means hiredis refused or the socket failed; the connection is then
         // broken and the caller reports connection.
@@ -133,6 +147,7 @@ namespace redis {
             if (!ok_) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
             const coro::deadline deadline{budget};
             for (;;) {
+                if (auto stopped = cancelled()) co_return std::unexpected(std::move(*stopped));
                 int done = 0;
                 if (redisBufferWrite(conn_, &done) != REDIS_OK) co_return std::unexpected(broken());
                 if (done != 0) co_return std::expected<void, error>{};
@@ -148,6 +163,7 @@ namespace redis {
             if (!ok_) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
             const coro::deadline deadline{budget};
             for (;;) {
+                if (auto stopped = cancelled()) co_return std::unexpected(std::move(*stopped));
                 void* raw = nullptr;
                 if (redisGetReplyFromReader(conn_, &raw) != REDIS_OK) co_return std::unexpected(broken());
                 if (raw != nullptr) {
@@ -211,13 +227,24 @@ namespace redis {
         // the error to report, with the connection already finished
         // (timeout) or marked broken (anything else).
         [[nodiscard]] std::optional<error> after_wait(const coro::wait_status st) {
-            if (st == coro::wait_status::ready) return std::nullopt;
+            if (st == coro::wait_status::ready) return cancelled();
+            if (auto stopped = cancelled()) return stopped;
             if (st == coro::wait_status::timeout) {
                 finish();
                 return error{error_kind::timeout, "command timed out"};
             }
+            // Cancelled or failed, the reply stream is now at an unknown
+            // offset either way, so the connection does not go back in use.
             ok_ = false;
+            if (st == coro::wait_status::cancelled) return error{error_kind::connection, "wait cancelled"};
             return error{error_kind::connection, "reactor failed while waiting on the connection"};
+        }
+
+        // Asked to stop, whether or not a wait was parked to be cancelled.
+        [[nodiscard]] std::optional<error> cancelled() noexcept {
+            if (!cancelled_.load(std::memory_order_acquire)) return std::nullopt;
+            ok_ = false;
+            return error{error_kind::connection, "wait cancelled"};
         }
 
         [[nodiscard]] error broken() noexcept {
@@ -239,6 +266,7 @@ namespace redis {
             ok_ = false;
         }
 
+        mutable std::atomic<bool> cancelled_{false};
         std::vector<const char*> ptrs_;
         std::vector<std::size_t> lens_;
         redisContext* conn_;

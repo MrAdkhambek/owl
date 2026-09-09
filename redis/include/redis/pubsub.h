@@ -14,12 +14,17 @@
 // pending, destroying is not an option -- the frame is parked inside a
 // reactor read that may never return, and the reactor holds a pointer into
 // it -- so the consumer passes a std::stop_token and requests a stop. The
-// stop_callback below calls shutdown() on the socket, which wakes the
-// parked read with EOF on kqueue, epoll and the h2o loop alike, with no
-// reactor API to add; the read fails, the body sees the stop request and
-// returns instead of throwing, and the pending next() completes with
-// nullopt. The callback is declared after the connection so it dies first,
-// and its destructor waits for a callback running on another thread.
+// stop_callback below cancels the wait: the parked read resumes with a
+// cancelled status, the body sees the stop request and returns instead of
+// throwing, and the pending next() completes with nullopt. Nothing is
+// closed to achieve it, which is what makes the connection's fate the
+// generator's own business. The callback is declared after the connection
+// so it dies first, and its destructor waits for a callback running on
+// another thread.
+//
+// Where the stop may be requested from is the reactor's rule, not this
+// one's: native_reactor takes a cancel from any thread, owl's loop_reactor
+// only from its own loop -- which is where a handler's abort already is.
 //
 // A consumer that stops pulling but keeps the generator alive leaves the
 // socket to fill until the server's client-output-buffer limit closes it.
@@ -31,8 +36,6 @@
 #include <string_view>
 #include <utility>
 #include <vector>
-
-#include <sys/socket.h>
 
 #include <coro/async_generator.h>
 
@@ -57,8 +60,8 @@ namespace redis {
         const std::unique_ptr<connection> conn = std::move(*opened);
         if (stop.stop_requested()) co_return;
 
-        const std::stop_callback wake{stop, [fd = conn->fd()] {
-            ::shutdown(fd, SHUT_RDWR);
+        const std::stop_callback wake{stop, [c = conn.get()] {
+            c->cancel_wait();
         }};
 
         const detail::command_args argv{"SUBSCRIBE", channels};

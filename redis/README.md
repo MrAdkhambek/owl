@@ -127,9 +127,12 @@ Ending a subscription depends on whether a pull is pending:
   it is parked on, the connection with it, and the server drops the
   subscription on EOF. There is no unsubscribe call.
 - **A `next()` pending:** pass a `std::stop_token` and request a stop. The
-  generator shuts the socket down, the pending read wakes, and that `next()`
-  completes with `std::nullopt`. Never destroy a generator whose `next()` is
-  pending: its frame is parked in the reactor.
+  generator cancels the parked read through the reactor, and that `next()`
+  completes with `std::nullopt` without anything being closed to achieve
+  it. Never destroy a generator whose `next()` is pending: its frame is
+  parked in the reactor. Where the stop may be requested from is the
+  reactor's rule: `coro::native_reactor` accepts a cancel from any thread,
+  owl's `loop_reactor` only from its own loop.
 
 ```cpp
 std::stop_source stop;

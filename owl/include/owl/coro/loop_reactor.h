@@ -60,6 +60,15 @@ namespace owl {
             co_return co_await sleep_awaiter{.self = this, .timeout = timeout};
         }
 
+        // Ends the wait parked on this descriptor: that coroutine resumes
+        // with cancelled, and nothing is closed. Loop-thread only, like
+        // everything else here.
+        void cancel(const int fd) const {
+            const auto it = sockets_.find(fd);
+            if (it == sockets_.end() || it->second.req == nullptr) return;
+            finish(it->second.req, coro::wait_status::cancelled);
+        }
+
         // Stops watching the descriptor and closes the reactor's copy of
         // it. The caller's own descriptor is not touched, so this is
         // correct whether the caller has closed it already or is about to:

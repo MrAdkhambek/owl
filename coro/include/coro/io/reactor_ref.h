@@ -10,6 +10,10 @@
 // default-constructed handle is null: wait answers error without parking
 // and release is a no-op.
 //
+// cancel(fd) ends a wait parked on a descriptor, resuming that waiter with
+// wait_status::cancelled and leaving the descriptor alone -- the way to
+// stop waiting for something that may never arrive.
+//
 // release(fd) tells the reactor to stop watching a descriptor and to drop
 // whatever state it kept for it. The caller's descriptor is not touched, so
 // it does not matter whether the caller has already closed it. A reactor
@@ -28,7 +32,7 @@ namespace coro {
 
         template <io_reactor R>
         explicit reactor_ref(R& reactor) noexcept
-            : ctx_(&reactor), wait_(&wait_thunk<R>), release_(&release_thunk<R>) {
+            : ctx_(&reactor), wait_(&wait_thunk<R>), release_(&release_thunk<R>), cancel_(&cancel_thunk<R>) {
         }
 
         [[nodiscard]] task<wait_status>
@@ -39,6 +43,13 @@ namespace coro {
 
         void release(const int fd) const {
             if (ctx_ != nullptr) release_(ctx_, fd);
+        }
+
+        // Ends a wait parked on the descriptor: that waiter resumes with
+        // wait_status::cancelled, and the descriptor is left alone. A
+        // reactor that cannot do it gets a no-op thunk, as with release.
+        void cancel(const int fd) const {
+            if (ctx_ != nullptr) cancel_(ctx_, fd);
         }
 
         [[nodiscard]] explicit operator bool() const noexcept {
@@ -66,8 +77,16 @@ namespace coro {
             }
         }
 
+        template <typename R>
+        static void cancel_thunk(void* const ctx, const int fd) {
+            if constexpr (requires(R& r, const int f) { r.cancel(f); }) {
+                static_cast<R*>(ctx)->cancel(fd);
+            }
+        }
+
         void* ctx_{};
         wait_fn wait_{};
         release_fn release_{};
+        release_fn cancel_{};
     };
 }

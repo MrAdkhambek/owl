@@ -202,3 +202,59 @@ TEST(Reactor, TimerOfAReadyWaitDoesNotFireIntoALaterWait) {
     EXPECT_EQ(untimed, coro::wait_status::ready) << "the stale timer fired into the next wait";
     EXPECT_GE(elapsed, 250ms) << "an untimed wait ended early";
 }
+
+// A wait with no deadline on something that never becomes readable would
+// park forever; cancel is how a caller ends it. The descriptor is left
+// open -- only its owner closes it -- and the waiter learns why it woke.
+TEST(Reactor, CancelEndsAParkedWaitAndLeavesTheFdOpen) {
+    coro::native_reactor reactor;
+    const pipe_pair pipe;
+
+    std::thread stopper([&] {
+        std::this_thread::sleep_for(50ms);
+        reactor.cancel(pipe.read_end());
+    });
+    const auto status = coro::sync_wait([&]() -> coro::task<coro::wait_status> {
+        co_return co_await reactor.wait(pipe.read_end(), coro::interest::read, -1ms);
+    }());
+    stopper.join();
+
+    EXPECT_EQ(status, coro::wait_status::cancelled);
+    // Still the caller's descriptor, still usable.
+    pipe.write_byte();
+    EXPECT_EQ(coro::sync_wait([&]() -> coro::task<coro::wait_status> {
+                  co_return co_await reactor.wait(pipe.read_end(), coro::interest::read, 2s);
+              }()),
+              coro::wait_status::ready);
+}
+
+// A cancel names the waits that exist when it is called. One issued with
+// nothing parked has nothing to do, and must not be held against the next
+// wait on that descriptor -- the loop makes the race, if there were one,
+// overwhelmingly likely to be hit.
+TEST(Reactor, ACancelDoesNotFallOnALaterWaitOnTheSameFd) {
+    coro::native_reactor reactor;
+    const pipe_pair pipe;
+    for (int i = 0; i < 40; ++i) {
+        reactor.cancel(pipe.read_end());
+        pipe.write_byte();
+        EXPECT_EQ(coro::sync_wait([&]() -> coro::task<coro::wait_status> {
+                      co_return co_await reactor.wait(pipe.read_end(), coro::interest::read, 2s);
+                  }()),
+                  coro::wait_status::ready);
+        char drained = 0;
+        EXPECT_EQ(::read(pipe.read_end(), &drained, 1), 1);
+    }
+}
+
+TEST(Reactor, CancelOfAnIdleDescriptorIsANoOp) {
+    coro::native_reactor reactor;
+    const pipe_pair pipe;
+    reactor.cancel(pipe.read_end());
+    reactor.cancel(-1);
+    pipe.write_byte();
+    EXPECT_EQ(coro::sync_wait([&]() -> coro::task<coro::wait_status> {
+                  co_return co_await reactor.wait(pipe.read_end(), coro::interest::read, 2s);
+              }()),
+              coro::wait_status::ready);
+}
