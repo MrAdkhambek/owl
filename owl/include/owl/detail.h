@@ -10,6 +10,7 @@
 #include "owl/coro/loop_scheduler.h"
 #include "owl/http/detail/finish.h"
 #include "owl/http/request.h"
+#include "owl/core/drivers.h"
 #include "owl/routing/router.h"
 
 #ifdef OWL_ENABLE_PROMETHEUS
@@ -136,23 +137,16 @@ namespace owl::detail {
         auto* const context = new Context<S>{dispatcher->state, ctx->loop};
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
 
-        // The drivers are built now, not with the Context: each holds a
-        // handle to this Context's own reactor or scheduler, which exist
-        // only once the Context does. The Context is their sole owner.
+        // Each driver holds a handle to a member of this Context, so
+        // they are built now rather than with it; how is drivers.h's.
 #ifdef OWL_ENABLE_POSTGRESQL
-        if (dispatcher->drivers.psql) {
-            context->psql = std::make_unique<sql::pool<sql::psql>>(*dispatcher->drivers.psql, sql::reactor_ref{context->reactor});
-        }
+        wire<sql::pool<sql::psql>>(*context, dispatcher->drivers);
 #endif
 #ifdef OWL_ENABLE_SQLITE
-        if (dispatcher->drivers.sqlite) {
-            context->sqlite = std::make_unique<sql::pool<sql::sqlite>>(*dispatcher->drivers.sqlite, sql::scheduler_ref{context->loop});
-        }
+        wire<sql::pool<sql::sqlite>>(*context, dispatcher->drivers);
 #endif
 #ifdef OWL_ENABLE_REDIS
-        if (dispatcher->drivers.redis) {
-            context->redis = std::make_unique<redis::client>(*dispatcher->drivers.redis, coro::reactor_ref{context->reactor});
-        }
+        wire<redis::client>(*context, dispatcher->drivers);
 #endif
         h2o_context_set_handler_context(ctx, handler, context);
     }

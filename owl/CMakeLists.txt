@@ -15,6 +15,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/owl.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/detail.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/server.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/drivers.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/method.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/state.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/token.h"

@@ -34,18 +34,7 @@
 #include "owl/core/token.h"
 #include "owl/util/util.h"
 
-#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE)
-#include <sql/pool.h>
-#endif
-#ifdef OWL_ENABLE_POSTGRESQL
-#include <sql/psql/psql.h>
-#endif
-#ifdef OWL_ENABLE_SQLITE
-#include <sql/sqlite/sqlite.h>
-#endif
-#ifdef OWL_ENABLE_REDIS
-#include <redis/client.h>
-#endif
+#include "owl/core/drivers.h"
 
 namespace owl {
     namespace detail {
@@ -265,43 +254,19 @@ namespace owl {
         }
     };
 
-#ifdef OWL_ENABLE_POSTGRESQL
-    // The worker's postgres pool. A Context member outlives the request,
-    // which is the FromContextRef guarantee; handlers take
-    // const sql::pool<sql::psql>& -- a source is a capability, not state the
-    // handler mutates. An empty optional (with_psql never called) is a
-    // wiring mistake, so it kicks 500 rather than anything 4xx.
-    template <>
-    struct FromContextRef<sql::pool<sql::psql>> {
+    // Any driver owl wires, extracted by the type a handler names. One
+    // specialization rather than one per driver: they differed only in
+    // which member they read and which message they carried, and
+    // core/drivers.h already says both. A driver the builder never asked
+    // for is a wiring mistake, so it kicks 500 rather than anything 4xx.
+    template <detail::driver_type T>
+    struct FromContextRef<T> {
         template <typename S>
-        std::expected<const sql::pool<sql::psql>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.psql) return ctx.psql.get();
-            return KickToken::internal_error("postgres pool is not wired");
+        std::expected<const T*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (const auto& slot = detail::DriverTraits<T>::slot(ctx)) return slot.get();
+            return KickToken::internal_error(std::string{detail::DriverTraits<T>::unwired});
         }
     };
-#endif
-#ifdef OWL_ENABLE_SQLITE
-    template <>
-    struct FromContextRef<sql::pool<sql::sqlite>> {
-        template <typename S>
-        std::expected<const sql::pool<sql::sqlite>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.sqlite) return ctx.sqlite.get();
-            return KickToken::internal_error("sqlite pool is not wired");
-        }
-    };
-#endif
-#ifdef OWL_ENABLE_REDIS
-    // The worker's Redis client, by const& like a pool: commands go through
-    // a const client, and the multiplexer's state is its own business.
-    template <>
-    struct FromContextRef<redis::client> {
-        template <typename S>
-        std::expected<const redis::client*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.redis) return ctx.redis.get();
-            return KickToken::internal_error("redis client is not wired");
-        }
-    };
-#endif
 
     // The handler-parameter contract, read in the spelling the handler
     // declared: a by-value T extracts a value through FromContext<T>; a
