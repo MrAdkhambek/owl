@@ -68,6 +68,7 @@ target_sources(coro INTERFACE
         include/coro/io/reactor_ref.h
 
         include/coro/sync/async_mutex.h
+        include/coro/sync/waiter_queue.h
 )
 
 # Tree / manifest / umbrella consistency: see cmake/owl_header_guard.cmake.
@@ -132,6 +133,7 @@ if (BUILD_TESTING)
     coro_add_test(executors/test_timer_scheduler)
 
     coro_add_test(sync/test_async_mutex)
+    coro_add_test(sync/test_waiter_queue)
 
     coro_add_test(io/test_reactor)
     coro_add_test(io/test_reactor_ref)

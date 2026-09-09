@@ -12,9 +12,10 @@
 // waiter nodes (no allocation). A released connection goes straight to
 // the first waiter. One that reports !ok() is destroyed on release and
 // replaced lazily; the first waiter is woken to do the replacing.
-// Resumption runs a drain loop rather than a recursion, the way
-// async_mutex::unlock does, so a chain of waiters that complete without
-// suspending never deepens the stack.
+// The queue and the resumption are coro::waiter_queue and
+// coro::resume_drain: resumption runs a drain loop rather than a
+// recursion, so a chain of waiters that complete without suspending never
+// deepens the stack.
 //
 // close() fails parked checkouts with error_kind::closed and destroys idle
 // connections; a leased one dies on release. Destroying a pool with a
@@ -31,6 +32,7 @@
 #include <utility>
 #include <vector>
 
+#include <coro/sync/waiter_queue.h>
 #include <coro/task.h>
 
 #include "sql/concepts.h"
@@ -156,7 +158,7 @@ namespace sql {
             closed_ = true;
             while (waiter* const w = waiters_.pop()) {
                 w->closed = true;
-                resume(w);
+                drain_.resume(w);
             }
             for (connection* const c : idle_) destroy(c);
             idle_.clear();
@@ -171,42 +173,20 @@ namespace sql {
         }
 
         [[nodiscard]] std::size_t waiting() const noexcept {
-            std::size_t n = 0;
-            for (const waiter* w = waiters_.head; w != nullptr; w = w->next) ++n;
-            return n;
+            return waiters_.size();
         }
 
     private:
         friend class lease<D>;
 
+        // Two links: next threads the wait queue, ready_next the drain's.
+        // A node can be in both, so they cannot share one pointer.
         struct waiter final {
             waiter* next{};
+            waiter* ready_next{};
             std::coroutine_handle<> h{};
             connection* handed{};
             bool closed = false;
-        };
-
-        // Intrusive FIFO over the waiter nodes, which live in the parked
-        // coroutines' frames: nothing is allocated to wait.
-        struct waiter_queue final {
-            waiter* head{};
-            waiter* tail{};
-
-            void push(waiter* const w) noexcept {
-                w->next = nullptr;
-                if (tail != nullptr) tail->next = w;
-                else head = w;
-                tail = w;
-            }
-
-            [[nodiscard]] waiter* pop() noexcept {
-                waiter* const w = head;
-                if (w == nullptr) return nullptr;
-                head = w->next;
-                if (head == nullptr) tail = nullptr;
-                w->next = nullptr;
-                return w;
-            }
         };
 
         struct park final {
@@ -234,33 +214,18 @@ namespace sql {
             }
             if (waiter* const w = waiters_.pop()) {
                 w->handed = c;
-                resume(w);
+                drain_.resume(w);
                 return;
             }
             idle_.push_back(c);
         }
 
         void wake_one() const noexcept {
-            if (waiter* const w = waiters_.pop()) resume(w);
+            if (waiter* const w = waiters_.pop()) drain_.resume(w);
         }
 
         [[nodiscard]] static error closed_error() {
             return error{error_kind::closed, "pool is closed"};
-        }
-
-        // The drain loop. A resumption that happens while one is already
-        // running -- a resumed waiter releasing its lease before it
-        // suspends -- is queued and run by the outer call, so the depth
-        // stays one whatever the chain length.
-        void resume(waiter* const w) const noexcept {
-            if (draining_) {
-                ready_.push(w);
-                return;
-            }
-            draining_ = true;
-            w->h.resume();
-            while (waiter* const next = ready_.pop()) next->h.resume();
-            draining_ = false;
         }
 
         void destroy(connection* const c) const noexcept {
@@ -274,10 +239,9 @@ namespace sql {
         unsigned limit_;
         mutable std::vector<std::unique_ptr<connection>> connections_;
         mutable std::vector<connection*> idle_;
-        mutable waiter_queue waiters_;
-        mutable waiter_queue ready_;
+        mutable coro::waiter_queue<waiter, &waiter::next> waiters_;
+        mutable coro::resume_drain<waiter, &waiter::ready_next> drain_;
         mutable unsigned opening_ = 0;
         mutable bool closed_ = false;
-        mutable bool draining_ = false;
     };
 }

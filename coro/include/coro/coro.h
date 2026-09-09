@@ -38,3 +38,4 @@
 #include "coro/io/reactor_ref.h"
 
 #include "coro/sync/async_mutex.h"
+#include "coro/sync/waiter_queue.h"

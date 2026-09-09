@@ -17,9 +17,8 @@
 // oldest and its deadline the earliest. A connection is opened lazily by
 // the first command; callers that arrive meanwhile park on the connect
 // queue and are woken together. Every waiter node lives in its caller's
-// frame, so parking allocates nothing. Resumption runs sql::pool's drain
-// loop, so a chain of waiters that complete without suspending never
-// deepens the stack.
+// frame, so parking allocates nothing. The queues and the resumption are
+// coro::waiter_queue and coro::resume_drain, which sql::pool uses too.
 //
 // Failure on the head's wait: a timeout is the head's timeout, everyone
 // behind it gets connection; EOF or a protocol error is connection for
@@ -48,6 +47,7 @@
 
 #include <coro/io/deadline.h>
 #include <coro/io/reactor_ref.h>
+#include <coro/sync/waiter_queue.h>
 #include <coro/task.h>
 
 #include "redis/args.h"
@@ -87,7 +87,7 @@ namespace redis {
             const coro::deadline deadline{cfg_.command_timeout};
             waiter w{};
             replies_.push(&w);
-            if (replies_.head != &w) {
+            if (replies_.front() != &w) {
                 co_await park{&w};
                 if (w.failure) co_return std::unexpected(std::move(*w.failure));
             }
@@ -113,7 +113,7 @@ namespace redis {
         }
 
         [[nodiscard]] std::size_t in_flight() const noexcept {
-            return replies_.size;
+            return replies_.size();
         }
 
         // A connection of one's own, for a caller that cannot share the
@@ -254,47 +254,14 @@ namespace redis {
             if constexpr (!std::is_void_v<T>) return std::move(*r);
         }
 
-        // Two links, because a waiter can sit in two queues at once: the
-        // head stays in replies_ while it reads, and a baton pass from
-        // inside a drain loop parks that same head on ready_. One link
-        // shared by both would sever the FIFO behind it.
+        // Two links, because a waiter sits in two queues at once: the head
+        // stays in replies_ while it reads, and a baton pass from inside a
+        // drain parks that same head on the drain's own queue.
         struct waiter final {
             waiter* next{};
             waiter* ready_next{};
             std::coroutine_handle<> h{};
             std::optional<error> failure{};
-        };
-
-        // Intrusive FIFO over the waiter nodes, which live in the parked
-        // coroutines' frames: nothing is allocated to wait. Link selects
-        // which pointer threads the queue.
-        template <waiter* waiter::*Link>
-        struct waiter_queue final {
-            waiter* head{};
-            waiter* tail{};
-            std::size_t size = 0;
-
-            [[nodiscard]] bool empty() const noexcept {
-                return head == nullptr;
-            }
-
-            void push(waiter* const w) noexcept {
-                w->*Link = nullptr;
-                if (tail != nullptr) tail->*Link = w;
-                else head = w;
-                tail = w;
-                ++size;
-            }
-
-            [[nodiscard]] waiter* pop() noexcept {
-                waiter* const w = head;
-                if (w == nullptr) return nullptr;
-                head = w->*Link;
-                if (head == nullptr) tail = nullptr;
-                w->*Link = nullptr;
-                --size;
-                return w;
-            }
         };
 
         struct park final {
@@ -350,7 +317,7 @@ namespace redis {
         }
 
         void wake_connects() const noexcept {
-            while (waiter* const w = connects_.pop()) resume(w);
+            while (waiter* const w = connects_.pop()) drain_.resume(w);
         }
 
         // Flush whatever append() left, then one reply; pushes are skipped.
@@ -371,13 +338,13 @@ namespace redis {
             const std::string dropped = std::string{"connection dropped: "} + e.what();
             while (waiter* const w = replies_.pop()) {
                 w->failure = error{error_kind::connection, dropped};
-                resume(w);
+                drain_.resume(w);
             }
             return e;
         }
 
         void pass_baton() const noexcept {
-            if (waiter* const next = replies_.head) resume(next);
+            if (waiter* const next = replies_.front()) drain_.resume(next);
             else if (closed_) conn_.reset();
         }
 
@@ -385,29 +352,13 @@ namespace redis {
             return error{error_kind::closed, "client is closed"};
         }
 
-        // The drain loop. A resumption that happens while one is already
-        // running -- a resumed waiter passing the baton before it suspends
-        // -- is queued and run by the outer call, so the depth stays one
-        // whatever the chain length.
-        void resume(waiter* const w) const noexcept {
-            if (draining_) {
-                ready_.push(w);
-                return;
-            }
-            draining_ = true;
-            w->h.resume();
-            while (waiter* const next = ready_.pop()) next->h.resume();
-            draining_ = false;
-        }
-
         config cfg_;
         coro::reactor_ref io_;
         mutable std::unique_ptr<connection> conn_;
-        mutable waiter_queue<&waiter::next> connects_;
-        mutable waiter_queue<&waiter::next> replies_;
-        mutable waiter_queue<&waiter::ready_next> ready_;
+        mutable coro::waiter_queue<waiter, &waiter::next> connects_;
+        mutable coro::waiter_queue<waiter, &waiter::next> replies_;
+        mutable coro::resume_drain<waiter, &waiter::ready_next> drain_;
         mutable bool opening_ = false;
         mutable bool closed_ = false;
-        mutable bool draining_ = false;
     };
 }
