@@ -130,12 +130,12 @@ namespace {
 TEST(OwlWiring, SqliteQueryCompletesOnTheWorkerLoop) {
     Fixture fx{true, nullptr};
     const auto& context = fx.context();
-    ASSERT_TRUE(context.sqlite.has_value());
+    ASSERT_NE(context.sqlite, nullptr);
 
     const auto* const request = owl::Request::from(&fx.req);
     const auto db = owl::fromContextRef<sql::pool<sql::sqlite>>(context, *request);
     ASSERT_TRUE(db.has_value());
-    EXPECT_EQ(*db, &*context.sqlite);
+    EXPECT_EQ(*db, context.sqlite.get());
 
     const auto all = owl::extract_all<const sql::pool<sql::sqlite>&>(context, *request);
     ASSERT_TRUE(all.has_value());
@@ -172,7 +172,7 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
     if (dsn == nullptr) GTEST_SKIP() << "OWL_TEST_PSQL_DSN is not set";
     Fixture fx{false, dsn};
     const auto& context = fx.context();
-    ASSERT_TRUE(context.psql.has_value());
+    ASSERT_NE(context.psql, nullptr);
 
     const auto* const request = owl::Request::from(&fx.req);
     const auto pg = owl::fromContextRef<sql::pool<sql::psql>>(context, *request);
@@ -201,12 +201,12 @@ TEST(OwlWiring, RedisCommandCompletesOnTheWorkerLoop) {
     if (std::getenv("OWL_TEST_REDIS") == nullptr) GTEST_SKIP() << "OWL_TEST_REDIS is not set";
     Fixture fx{false, nullptr, true};
     const auto& context = fx.context();
-    ASSERT_TRUE(context.redis.has_value());
+    ASSERT_NE(context.redis, nullptr);
 
     const auto* const request = owl::Request::from(&fx.req);
     const auto rd = owl::fromContextRef<redis::client>(context, *request);
     ASSERT_TRUE(rd.has_value());
-    EXPECT_EQ(*rd, &*context.redis);
+    EXPECT_EQ(*rd, context.redis.get());
 
     const auto all = owl::extract_all<const redis::client&>(context, *request);
     ASSERT_TRUE(all.has_value());

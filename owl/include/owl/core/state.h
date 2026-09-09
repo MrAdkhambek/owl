@@ -1,7 +1,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
@@ -63,22 +62,25 @@ namespace owl {
         owl::loop_reactor reactor;
 
 #ifdef OWL_ENABLE_POSTGRESQL
-        // Empty until on_context_init wires it, and empty for good when the
-        // builder never asked for the driver -- the extractor kicks 500. The
-        // pool holds a reactor_ref to the member above; a Context is neither
-        // copyable nor movable, so that address is stable.
-        std::optional<sql::pool<sql::psql>> psql;
+        // Null until on_context_init wires it, and null for good when the
+        // builder never asked for the driver -- the extractor kicks 500. A
+        // unique_ptr because the Context is the one owner and the pool is
+        // built only once the Context, and the reactor it points at, exist;
+        // handlers borrow it by const&, never share it. The pool holds a
+        // reactor_ref to the member above, so it is declared after it and
+        // dies before it.
+        std::unique_ptr<sql::pool<sql::psql>> psql;
 #endif
 #ifdef OWL_ENABLE_SQLITE
         // Per worker like the psql pool: the sqlite connection threads post
         // their completions back through this worker's loop_scheduler.
-        std::optional<sql::pool<sql::sqlite>> sqlite;
+        std::unique_ptr<sql::pool<sql::sqlite>> sqlite;
 #endif
 #ifdef OWL_ENABLE_REDIS
         // The worker's Redis client: one multiplexed connection, plus one
         // per live subscription, on this worker's reactor. Wired like the
-        // pools above; empty for good when the builder never asked.
-        std::optional<redis::client> redis;
+        // pools above; null for good when the builder never asked.
+        std::unique_ptr<redis::client> redis;
 #endif
     };
 

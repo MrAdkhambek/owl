@@ -275,7 +275,7 @@ namespace owl {
     struct FromContextRef<sql::pool<sql::psql>> {
         template <typename S>
         std::expected<const sql::pool<sql::psql>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.psql) return &*ctx.psql;
+            if (ctx.psql) return ctx.psql.get();
             return KickToken::internal_error("postgres pool is not wired");
         }
     };
@@ -285,7 +285,7 @@ namespace owl {
     struct FromContextRef<sql::pool<sql::sqlite>> {
         template <typename S>
         std::expected<const sql::pool<sql::sqlite>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.sqlite) return &*ctx.sqlite;
+            if (ctx.sqlite) return ctx.sqlite.get();
             return KickToken::internal_error("sqlite pool is not wired");
         }
     };
@@ -297,7 +297,7 @@ namespace owl {
     struct FromContextRef<redis::client> {
         template <typename S>
         std::expected<const redis::client*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
-            if (ctx.redis) return &*ctx.redis;
+            if (ctx.redis) return ctx.redis.get();
             return KickToken::internal_error("redis client is not wired");
         }
     };

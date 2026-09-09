@@ -136,16 +136,23 @@ namespace owl::detail {
         auto* const context = new Context<S>{dispatcher->state, ctx->loop};
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
 
-        // The pools are built in place: neither copyable nor movable, and
-        // each holds a handle to this Context's own reactor or scheduler.
+        // The drivers are built now, not with the Context: each holds a
+        // handle to this Context's own reactor or scheduler, which exist
+        // only once the Context does. The Context is their sole owner.
 #ifdef OWL_ENABLE_POSTGRESQL
-        if (dispatcher->drivers.psql) context->psql.emplace(*dispatcher->drivers.psql, sql::reactor_ref{context->reactor});
+        if (dispatcher->drivers.psql) {
+            context->psql = std::make_unique<sql::pool<sql::psql>>(*dispatcher->drivers.psql, sql::reactor_ref{context->reactor});
+        }
 #endif
 #ifdef OWL_ENABLE_SQLITE
-        if (dispatcher->drivers.sqlite) context->sqlite.emplace(*dispatcher->drivers.sqlite, sql::scheduler_ref{context->loop});
+        if (dispatcher->drivers.sqlite) {
+            context->sqlite = std::make_unique<sql::pool<sql::sqlite>>(*dispatcher->drivers.sqlite, sql::scheduler_ref{context->loop});
+        }
 #endif
 #ifdef OWL_ENABLE_REDIS
-        if (dispatcher->drivers.redis) context->redis.emplace(*dispatcher->drivers.redis, coro::reactor_ref{context->reactor});
+        if (dispatcher->drivers.redis) {
+            context->redis = std::make_unique<redis::client>(*dispatcher->drivers.redis, coro::reactor_ref{context->reactor});
+        }
 #endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
