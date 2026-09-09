@@ -32,6 +32,8 @@ target_sources(redis INTERFACE
         include/redis/connection.h
         include/redis/detail/deadline.h
         include/redis/client.h
+        include/redis/command.h
+        include/redis/detail/args.h
 )
 
 find_package(PkgConfig REQUIRED)
@@ -88,4 +90,7 @@ if (BUILD_TESTING)
     redis_add_test(test_reply)
     redis_add_test(test_connection)
     redis_add_test(test_client)
+    redis_add_test(test_args)
+    redis_add_test(test_command)
+    redis_add_compile_fail_test(rejects_unbindable_redis_argument)
 endif ()

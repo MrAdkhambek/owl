@@ -8,3 +8,4 @@
 #include "redis/config.h"
 #include "redis/connection.h"
 #include "redis/client.h"
+#include "redis/command.h"
