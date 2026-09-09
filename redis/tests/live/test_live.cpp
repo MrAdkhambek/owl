@@ -65,10 +65,10 @@ TEST(Live, SetGetRoundTrip) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto k = fx.key("kv");
-        co_await redis::set(fx.c, k, "value");
-        EXPECT_EQ(co_await redis::get(fx.c, k), std::optional<std::string>{"value"});
-        EXPECT_EQ(co_await redis::del(fx.c, k), 1);
-        EXPECT_EQ(co_await redis::get(fx.c, k), std::nullopt);
+        co_await fx.c.set(k, "value");
+        EXPECT_EQ(co_await fx.c.get(k), std::optional<std::string>{"value"});
+        EXPECT_EQ(co_await fx.c.del(k), 1);
+        EXPECT_EQ(co_await fx.c.get(k), std::nullopt);
     }());
 }
 
@@ -77,13 +77,13 @@ TEST(Live, IncrExpireTtl) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto k = fx.key("counter");
-        (void)co_await redis::del(fx.c, k);
-        EXPECT_EQ(co_await redis::incr(fx.c, k), 1);
-        EXPECT_EQ(co_await redis::incr(fx.c, k), 2);
-        EXPECT_TRUE(co_await redis::expire(fx.c, k, 60s));
-        const auto ttl = co_await redis::command(fx.c, "TTL", k);
+        (void)co_await fx.c.del(k);
+        EXPECT_EQ(co_await fx.c.incr(k), 1);
+        EXPECT_EQ(co_await fx.c.incr(k), 2);
+        EXPECT_TRUE(co_await fx.c.expire(k, 60s));
+        const auto ttl = co_await fx.c.command("TTL", k);
         EXPECT_GT(ttl.as<int>(), 0);
-        (void)co_await redis::del(fx.c, k);
+        (void)co_await fx.c.del(k);
     }());
 }
 
@@ -92,16 +92,16 @@ TEST(Live, EvalRateLimitScript) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto k = fx.key("rate");
-        (void)co_await redis::del(fx.c, k);
+        (void)co_await fx.c.del(k);
         const std::vector<std::string> keys{k};
         const std::vector<std::string_view> args{"60"};
         const std::string_view script =
             "local n = redis.call('INCR', KEYS[1]) "
             "if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end "
             "return n";
-        EXPECT_EQ((co_await redis::eval(fx.c, script, keys, args)).as<int>(), 1);
-        EXPECT_EQ((co_await redis::eval(fx.c, script, keys, args)).as<int>(), 2);
-        (void)co_await redis::del(fx.c, k);
+        EXPECT_EQ((co_await fx.c.eval(script, keys, args)).as<int>(), 1);
+        EXPECT_EQ((co_await fx.c.eval(script, keys, args)).as<int>(), 2);
+        (void)co_await fx.c.del(k);
     }());
 }
 
@@ -110,14 +110,14 @@ TEST(Live, SixteenConcurrentIncrsCount) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto k = fx.key("concurrent");
-        (void)co_await redis::del(fx.c, k);
+        (void)co_await fx.c.del(k);
         std::vector<coro::task<std::expected<std::int64_t, redis::error>>> incrs;
-        for (int i = 0; i < 16; ++i) incrs.push_back(redis::try_incr(fx.c, k));
+        for (int i = 0; i < 16; ++i) incrs.push_back(fx.c.try_incr(k));
         const auto results = co_await coro::when_all(std::move(incrs));
         for (const auto& r : results) EXPECT_TRUE(r.has_value());
-        EXPECT_EQ(co_await redis::get(fx.c, k), std::optional<std::string>{"16"});
+        EXPECT_EQ(co_await fx.c.get(k), std::optional<std::string>{"16"});
         EXPECT_EQ(fx.c.in_flight(), 0u);
-        (void)co_await redis::del(fx.c, k);
+        (void)co_await fx.c.del(k);
     }());
 }
 
@@ -126,7 +126,7 @@ TEST(Live, SubscribeReceivesAPublish) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto channel = fx.key("channel");
-        (void)co_await redis::try_command(fx.c, "PING");
+        (void)co_await fx.c.try_command("PING");
         bool got = false;
         auto consumer = [&]() -> coro::task<> {
             auto gen = redis::subscribe(fx.c, {channel});
@@ -142,7 +142,7 @@ TEST(Live, SubscribeReceivesAPublish) {
         // consumer has its message.
         auto producer = [&]() -> coro::task<> {
             while (!got) {
-                (void)co_await redis::try_publish(fx.c, channel, "hello");
+                (void)co_await fx.c.try_publish(channel, "hello");
                 (void)co_await fx.reactor.sleep(20ms);
             }
         };
@@ -155,7 +155,7 @@ TEST(Live, StopEndsAPendingSubscription) {
     fixture fx{*live};
     std::stop_source stop;
     coro::sync_wait([&]() -> coro::task<> {
-        (void)co_await redis::try_command(fx.c, "PING");
+        (void)co_await fx.c.try_command("PING");
         auto gen = redis::subscribe(fx.c, {fx.key("silent")}, stop.get_token());
         auto puller = [&]() -> coro::task<> {
             const auto m = co_await gen.next();
@@ -174,15 +174,15 @@ TEST(Live, WrongTypeCarriesItsPrefix) {
     fixture fx{*live};
     coro::sync_wait([&]() -> coro::task<> {
         const auto k = fx.key("hash");
-        (void)co_await redis::command(fx.c, "HSET", k, "f", "v");
-        const auto r = co_await redis::try_incr(fx.c, k);
+        (void)co_await fx.c.command("HSET", k, "f", "v");
+        const auto r = co_await fx.c.try_incr(k);
         EXPECT_FALSE(r.has_value());
         if (!r) {
             EXPECT_EQ(r.error().kind(), redis::error_kind::command);
             EXPECT_EQ(r.error().prefix(), "WRONGTYPE");
         }
         EXPECT_TRUE(fx.c.connected());
-        (void)co_await redis::del(fx.c, k);
+        (void)co_await fx.c.del(k);
     }());
 }
 
@@ -195,7 +195,7 @@ TEST(Live, UnknownUserIsConnect) {
     bad.password = "definitely-not-the-password";
     fixture fx{bad};
     coro::sync_wait([&]() -> coro::task<> {
-        const auto r = co_await redis::try_command(fx.c, "PING");
+        const auto r = co_await fx.c.try_command("PING");
         EXPECT_FALSE(r.has_value());
         if (!r) EXPECT_EQ(r.error().kind(), redis::error_kind::connect);
     }());

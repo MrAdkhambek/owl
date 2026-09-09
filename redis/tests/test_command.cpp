@@ -11,7 +11,6 @@
 #include <coro/task.h>
 
 #include <redis/client.h>
-#include <redis/command.h>
 #include <redis/error.h>
 #include <redis/reply.h>
 
@@ -46,15 +45,15 @@ TEST(Command, RendersArgumentsAndReturnsTheReply) {
     fixture fx;
     redis::client c{{.port = srv.port()}, fx.io};
     coro::sync_wait([&]() -> coro::task<> {
-        const auto set = co_await redis::try_command(c, "SET", "k", 5, "PX", 1500);
+        const auto set = co_await c.try_command("SET", "k", 5, "PX", 1500);
         EXPECT_TRUE(set.has_value());
         if (set) EXPECT_EQ(set->as<std::string>(), "OK");
 
         const std::vector<std::string> keys{"a", "b"};
-        const auto deleted = co_await redis::command(c, "DEL", keys);
+        const auto deleted = co_await c.command("DEL", keys);
         EXPECT_EQ(deleted.as<int>(), 2);
 
-        const auto missing = co_await redis::command(c, "GET", std::string_view{"missing"});
+        const auto missing = co_await c.command("GET", std::string_view{"missing"});
         EXPECT_TRUE(missing.is_null());
     }());
     c.close();
@@ -71,7 +70,7 @@ TEST(Command, ThrowingSpellingThrowsTheError) {
     coro::sync_wait([&]() -> coro::task<> {
         bool thrown = false;
         try {
-            (void)co_await redis::command(c, "INCR", "k");
+            (void)co_await c.command("INCR", "k");
         } catch (const redis::error& e) {
             thrown = true;
             EXPECT_EQ(e.kind(), redis::error_kind::command);
@@ -88,7 +87,7 @@ TEST(Command, ConnectFailureIsReturnedNotThrownOnTheTryPath) {
     fixture fx;
     redis::client c{{.port = 1, .connect_timeout = 2000ms}, fx.io};
     coro::sync_wait([&]() -> coro::task<> {
-        const auto r = co_await redis::try_command(c, "PING");
+        const auto r = co_await c.try_command("PING");
         EXPECT_FALSE(r.has_value());
         if (!r) EXPECT_EQ(r.error().kind(), redis::error_kind::connect);
     }());

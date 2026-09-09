@@ -165,7 +165,7 @@ See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_
 
 See [`sql/README.md`](../sql/README.md). With a driver enabled (SQLite is, by default; Postgres with `-DOWL_ENABLE_POSTGRESQL=ON`), `owl::owl` pulls `owl::sql`, the builder gains `with_psql(sql::psql::config)` and `with_sqlite(sql::sqlite::config)`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
 
-See [`redis/README.md`](../redis/README.md). With `-DOWL_ENABLE_REDIS=ON`, `owl::owl` pulls `owl::redis`, the builder gains `with_redis(redis::config)`, and every worker gets its own client on its own loop. A handler takes it by `const&` and awaits `redis::command(rd, "GET", key)` or one of the typed helpers; a subscription is `redis::subscribe(rd, {channel})`, ended by scope or a `std::stop_token`.
+See [`redis/README.md`](../redis/README.md). With `-DOWL_ENABLE_REDIS=ON`, `owl::owl` pulls `owl::redis`, the builder gains `with_redis(redis::config)`, and every worker gets its own client on its own loop. A handler takes it by `const&` and awaits `rd.command("GET", key)` or one of the typed helpers on it; a subscription is `redis::subscribe(rd, {channel})`, ended by scope or a `std::stop_token`.
 
 ## Server
 

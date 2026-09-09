@@ -8,7 +8,7 @@
 #include <string_view>
 #include <vector>
 
-#include <redis/detail/args.h>
+#include <redis/args.h>
 
 using redis::detail::command_args;
 

@@ -21,9 +21,9 @@ async generator, never a blocked event loop.
 ```cpp
 coro::task<owl::Response> cached(const redis::client& rd, owl::Path<"id", std::int64_t> id) {
     const auto key = "user:" + std::to_string(id.value);
-    if (const auto hit = co_await redis::get(rd, key)) co_return owl::Response::json(*hit);
+    if (const auto hit = co_await rd.get(key)) co_return owl::Response::json(*hit);
     const std::string body = co_await render_user(id.value);
-    co_await redis::set(rd, key, body, std::chrono::minutes{5});
+    co_await rd.set(key, body, std::chrono::minutes{5});
     co_return owl::Response::json(body);
 }
 ```
@@ -34,11 +34,14 @@ Every connection speaks RESP3, so the server must be Redis 6 or newer.
 
 ## Commands
 
-Two entry points, one shape: the command is its argv.
+Two entry points, one shape: the command is its argv. They are members,
+because a client is the one thing a command needs -- there is a single
+client type, unlike sql, where `query<"...">` runs against any driver's pool
+or transaction and so has to be told which.
 
 ```cpp
-auto r = co_await redis::try_command(rd, "SET", key, value, "EX", 60);   // std::expected<redis::reply, redis::error>
-auto v = co_await redis::command(rd, "GET", key);                        // redis::reply, throws redis::error
+auto r = co_await rd.try_command("SET", key, value, "EX", 60);   // std::expected<redis::reply, redis::error>
+auto v = co_await rd.command("GET", key);                        // redis::reply, throws redis::error
 ```
 
 Arguments may be `std::string`, `std::string_view`, C strings and literals,
@@ -56,15 +59,15 @@ time, each as a `try_` (returns `std::expected`) and a throwing twin:
 
 | | Sends | Returns |
 |---|---|---|
-| `get(rd, key)` | `GET` | `std::optional<std::string>` |
-| `set(rd, key, value)` / `set(rd, key, value, 1500ms)` | `SET` / `SET ... PX` | `void` |
-| `del(rd, key)` / `del(rd, keys)` | `DEL` | `std::int64_t` removed |
-| `incr(rd, key)` | `INCR` | `std::int64_t` |
-| `expire(rd, key, 60s)` | `EXPIRE` | `bool`, the key existed |
-| `eval(rd, script, keys, args)` | `EVAL` with `numkeys` from `keys` | `redis::reply` |
-| `publish(rd, channel, payload)` | `PUBLISH` | `std::int64_t` receivers |
+| `rd.get(key)` | `GET` | `std::optional<std::string>` |
+| `rd.set(key, value)` / `rd.set(key, value, 1500ms)` | `SET` / `SET ... PX` | `void` |
+| `rd.del(key)` / `rd.del(keys)` | `DEL` | `std::int64_t` removed |
+| `rd.incr(key)` | `INCR` | `std::int64_t` |
+| `rd.expire(key, 60s)` | `EXPIRE` | `bool`, the key existed |
+| `rd.eval(script, keys, args)` | `EVAL` with `numkeys` from `keys` | `redis::reply` |
+| `rd.publish(channel, payload)` | `PUBLISH` | `std::int64_t` receivers |
 
-`keys` and `args` are ranges. Everything else is `command`.
+`keys` and `args` are ranges. Everything else is `rd.command(...)`.
 
 ## Replies
 
@@ -111,8 +114,10 @@ while (const auto m = co_await messages.next()) {
 }
 ```
 
-Each subscription is its own connection, authenticated and on the same
-database as the client. The stream yields every `message` push and skips the
+`subscribe` is a free function rather than a member because it is not a
+command: it does not use the client's connection, it borrows only its config
+and reactor to open one of its own. Each subscription is therefore its own
+connection, authenticated and on the same database as the client. The stream yields every `message` push and skips the
 confirmations. A broken subscriber connection throws `redis::error` at
 `next()`.
 

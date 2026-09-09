@@ -31,11 +31,9 @@ target_sources(redis INTERFACE
         include/redis/config.h
         include/redis/connection.h
         include/redis/detail/deadline.h
+        include/redis/args.h
         include/redis/client.h
-        include/redis/command.h
-        include/redis/commands.h
         include/redis/pubsub.h
-        include/redis/detail/args.h
 )
 
 find_package(PkgConfig REQUIRED)

@@ -33,11 +33,14 @@
 // contract violation and asserts in debug builds.
 
 #include <cassert>
+#include <chrono>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <memory>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string>
 #include <string_view>
@@ -46,6 +49,7 @@
 #include <coro/io/reactor_ref.h>
 #include <coro/task.h>
 
+#include "redis/args.h"
 #include "redis/config.h"
 #include "redis/connection.h"
 #include "redis/detail/deadline.h"
@@ -66,10 +70,10 @@ namespace redis {
         client(const client&) = delete;
         client& operator=(const client&) = delete;
 
-        // The primitive every command function is written over. argv is
+        // The primitive every command above is written over. argv is
         // borrowed until the command is queued, which happens before the
         // first suspension after the connection exists.
-        [[nodiscard]] coro::task<std::expected<reply, error>> try_command(const std::span<const std::string_view> argv) const {
+        [[nodiscard]] coro::task<std::expected<reply, error>> send(const std::span<const std::string_view> argv) const {
             if (closed_) co_return std::unexpected(closed_error());
             if (auto ready = co_await ensure(); !ready) co_return std::unexpected(std::move(ready.error()));
             if (!conn_->append(argv)) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
@@ -116,6 +120,148 @@ namespace redis {
 
         [[nodiscard]] coro::reactor_ref io() const noexcept {
             return io_;
+        }
+
+        // The command API, as members: a client is the one thing a command
+        // needs. sql spells it query<"...">(pool, args) because a query runs
+        // against any driver's pool or transaction; here there is one client
+        // type, so the object in hand is the whole story.
+        //
+        // Arguments are borrowed for the life of the returned task -- the
+        // frame holds references, not copies -- so await in the same
+        // full-expression that built the task; naming the task and awaiting
+        // it later with temporaries as arguments dangles.
+
+        template <arg... Args>
+            requires (sizeof...(Args) > 0)
+        [[nodiscard]] coro::task<std::expected<reply, error>> try_command(const Args&... args) const {
+            const detail::command_args argv{args...};
+            co_return co_await send(argv.argv());
+        }
+
+        template <arg... Args>
+            requires (sizeof...(Args) > 0)
+        [[nodiscard]] coro::task<reply> command(const Args&... args) const {
+            auto r = co_await try_command(args...);
+            if (!r) throw std::move(r.error());
+            co_return std::move(*r);
+        }
+
+        // The seven the cache, rate-limit and pub/sub cases ask for. Each
+        // maps one reply shape and nothing more; everything else is
+        // command(). A try_ never throws for a server or link failure, but
+        // still throws error{conversion} if the server answers a shape the
+        // helper did not promise, because reading a reply is synchronous.
+
+        [[nodiscard]] coro::task<std::expected<std::optional<std::string>, error>>
+        try_get(const std::string_view key) const {
+            auto r = co_await try_command("GET", key);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return r->template as<std::optional<std::string>>();
+        }
+
+        [[nodiscard]] coro::task<std::optional<std::string>> get(const std::string_view key) const {
+            auto r = co_await try_get(key);
+            if (!r) throw std::move(r.error());
+            co_return std::move(*r);
+        }
+
+        [[nodiscard]] coro::task<std::expected<void, error>>
+        try_set(const std::string_view key, const std::string_view value) const {
+            auto r = co_await try_command("SET", key, value);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return std::expected<void, error>{};
+        }
+
+        [[nodiscard]] coro::task<std::expected<void, error>>
+        try_set(const std::string_view key, const std::string_view value, const std::chrono::milliseconds ttl) const {
+            auto r = co_await try_command("SET", key, value, "PX", ttl.count());
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return std::expected<void, error>{};
+        }
+
+        [[nodiscard]] coro::task<> set(const std::string_view key, const std::string_view value) const {
+            auto r = co_await try_set(key, value);
+            if (!r) throw std::move(r.error());
+        }
+
+        [[nodiscard]] coro::task<>
+        set(const std::string_view key, const std::string_view value, const std::chrono::milliseconds ttl) const {
+            auto r = co_await try_set(key, value, ttl);
+            if (!r) throw std::move(r.error());
+        }
+
+        // One key or a range of keys: both are args, and DEL takes a list.
+        template <arg Keys>
+        [[nodiscard]] coro::task<std::expected<std::int64_t, error>> try_del(const Keys& keys) const {
+            auto r = co_await try_command("DEL", keys);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return r->template as<std::int64_t>();
+        }
+
+        template <arg Keys>
+        [[nodiscard]] coro::task<std::int64_t> del(const Keys& keys) const {
+            auto r = co_await try_del(keys);
+            if (!r) throw std::move(r.error());
+            co_return *r;
+        }
+
+        [[nodiscard]] coro::task<std::expected<std::int64_t, error>> try_incr(const std::string_view key) const {
+            auto r = co_await try_command("INCR", key);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return r->template as<std::int64_t>();
+        }
+
+        [[nodiscard]] coro::task<std::int64_t> incr(const std::string_view key) const {
+            auto r = co_await try_incr(key);
+            if (!r) throw std::move(r.error());
+            co_return *r;
+        }
+
+        // true when the key existed and now has the TTL.
+        [[nodiscard]] coro::task<std::expected<bool, error>>
+        try_expire(const std::string_view key, const std::chrono::seconds ttl) const {
+            auto r = co_await try_command("EXPIRE", key, ttl.count());
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return r->template as<bool>();
+        }
+
+        [[nodiscard]] coro::task<bool> expire(const std::string_view key, const std::chrono::seconds ttl) const {
+            auto r = co_await try_expire(key, ttl);
+            if (!r) throw std::move(r.error());
+            co_return *r;
+        }
+
+        // EVAL script numkeys key... arg...; the key count is the range's
+        // size, which is why keys must be a range and not a single string.
+        template <typename Keys, typename Args>
+            requires detail::range_arg<Keys> && detail::range_arg<Args>
+        [[nodiscard]] coro::task<std::expected<reply, error>>
+        try_eval(const std::string_view script, const Keys& keys, const Args& args) const {
+            co_return co_await try_command("EVAL", script, std::ranges::distance(keys), keys, args);
+        }
+
+        template <typename Keys, typename Args>
+            requires detail::range_arg<Keys> && detail::range_arg<Args>
+        [[nodiscard]] coro::task<reply> eval(const std::string_view script, const Keys& keys, const Args& args) const {
+            auto r = co_await try_eval(script, keys, args);
+            if (!r) throw std::move(r.error());
+            co_return std::move(*r);
+        }
+
+        // The number of subscribers the message reached.
+        [[nodiscard]] coro::task<std::expected<std::int64_t, error>>
+        try_publish(const std::string_view channel, const std::string_view payload) const {
+            auto r = co_await try_command("PUBLISH", channel, payload);
+            if (!r) co_return std::unexpected(std::move(r.error()));
+            co_return r->template as<std::int64_t>();
+        }
+
+        [[nodiscard]] coro::task<std::int64_t>
+        publish(const std::string_view channel, const std::string_view payload) const {
+            auto r = co_await try_publish(channel, payload);
+            if (!r) throw std::move(r.error());
+            co_return *r;
         }
 
     private:

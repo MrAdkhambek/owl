@@ -1,6 +1,7 @@
 #pragma once
 
-// The argv a command is sent as, assembled from C++ values: strings and
+// What a command argument may be, and the argv one is assembled into:
+// strings and
 // byte spans are viewed in place, numbers are rendered into scratch
 // strings this object owns, and a range contributes one entry per element,
 // so DEL over a vector of keys and EVAL with runtime key lists need no

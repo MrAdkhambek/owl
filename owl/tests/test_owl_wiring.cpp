@@ -213,7 +213,7 @@ TEST(OwlWiring, RedisCommandCompletesOnTheWorkerLoop) {
 
     std::thread::id resumed_on;
     const auto loop_id = fx.run_on_loop([&]() -> coro::task<> {
-        const auto r = co_await redis::command(**rd, "PING");
+        const auto r = co_await (*rd)->command("PING");
         resumed_on = std::this_thread::get_id();
         EXPECT_EQ(r.as<std::string>(), "PONG");
         EXPECT_TRUE((*rd)->connected());

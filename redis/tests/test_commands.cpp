@@ -13,7 +13,6 @@
 #include <coro/task.h>
 
 #include <redis/client.h>
-#include <redis/commands.h>
 #include <redis/error.h>
 #include <redis/reply.h>
 
@@ -54,16 +53,16 @@ TEST(Commands, GetSetDelIncrExpire) {
     fixture fx;
     redis::client c{{.port = srv.port()}, fx.io};
     coro::sync_wait([&]() -> coro::task<> {
-        EXPECT_EQ(co_await redis::get(c, "k"), std::optional<std::string>{"v"});
-        EXPECT_EQ(co_await redis::get(c, "missing"), std::nullopt);
-        co_await redis::set(c, "k", "v");
-        co_await redis::set(c, "k", "v", 1500ms);
-        EXPECT_EQ(co_await redis::del(c, "k"), 1);
+        EXPECT_EQ(co_await c.get("k"), std::optional<std::string>{"v"});
+        EXPECT_EQ(co_await c.get("missing"), std::nullopt);
+        co_await c.set("k", "v");
+        co_await c.set("k", "v", 1500ms);
+        EXPECT_EQ(co_await c.del("k"), 1);
         const std::array<std::string_view, 2> keys{"a", "b"};
-        EXPECT_EQ(co_await redis::del(c, keys), 2);
-        EXPECT_EQ(co_await redis::incr(c, "n"), 3);
-        EXPECT_TRUE(co_await redis::expire(c, "n", 60s));
-        EXPECT_FALSE(co_await redis::expire(c, "gone", 60s));
+        EXPECT_EQ(co_await c.del(keys), 2);
+        EXPECT_EQ(co_await c.incr("n"), 3);
+        EXPECT_TRUE(co_await c.expire("n", 60s));
+        EXPECT_FALSE(co_await c.expire("gone", 60s));
     }());
     c.close();
     srv.join();
@@ -81,13 +80,13 @@ TEST(Commands, EvalAndPublish) {
     coro::sync_wait([&]() -> coro::task<> {
         const std::vector<std::string> keys{"a", "b"};
         const std::vector<std::string_view> args{"x"};
-        const auto one = co_await redis::eval(c, "return 1", keys, args);
+        const auto one = co_await c.eval("return 1", keys, args);
         EXPECT_EQ(one.as<int>(), 1);
         const std::vector<std::string_view> none;
-        const auto two = co_await redis::try_eval(c, "return 2", none, none);
+        const auto two = co_await c.try_eval("return 2", none, none);
         EXPECT_TRUE(two.has_value());
         if (two) EXPECT_EQ(two->as<int>(), 2);
-        EXPECT_EQ(co_await redis::publish(c, "news", "hi"), 2);
+        EXPECT_EQ(co_await c.publish("news", "hi"), 2);
     }());
     c.close();
     srv.join();
@@ -102,12 +101,12 @@ TEST(Commands, TryTwinsReturnErrorsAndThrowingTwinsThrow) {
     fixture fx;
     redis::client c{{.port = srv.port()}, fx.io};
     coro::sync_wait([&]() -> coro::task<> {
-        const auto r = co_await redis::try_incr(c, "k");
+        const auto r = co_await c.try_incr("k");
         EXPECT_FALSE(r.has_value());
         if (!r) EXPECT_EQ(r.error().prefix(), "WRONGTYPE");
         bool thrown = false;
         try {
-            (void)co_await redis::get(c, "k");
+            (void)co_await c.get("k");
         } catch (const redis::error& e) {
             thrown = true;
             EXPECT_EQ(e.kind(), redis::error_kind::command);

@@ -7,7 +7,6 @@
 #include "redis/reply.h"
 #include "redis/config.h"
 #include "redis/connection.h"
+#include "redis/args.h"
 #include "redis/client.h"
-#include "redis/command.h"
-#include "redis/commands.h"
 #include "redis/pubsub.h"

@@ -61,19 +61,19 @@ namespace rest {
     }
 
     coro::task<> store_session(const Cache& cache, const std::string_view token, const std::int64_t user_id) {
-        co_await redis::set(cache, "session:" + std::string{token}, std::to_string(user_id), session_ttl);
+        co_await cache.set("session:" + std::string{token}, std::to_string(user_id), session_ttl);
     }
 
     coro::task<bool> login_throttled(const Cache& cache, const std::string_view username) {
         const std::string key = "login:" + std::string{username};
-        const auto attempts = co_await redis::incr(cache, key);
+        const auto attempts = co_await cache.incr(key);
         // The first attempt starts the minute; the counter dies with it.
-        if (attempts == 1) (void)co_await redis::expire(cache, key, std::chrono::minutes{1});
+        if (attempts == 1) (void)co_await cache.expire(key, std::chrono::minutes{1});
         co_return attempts > login_attempts_per_minute;
     }
 
     coro::task<std::optional<std::int64_t>> user_of(const Cache& cache, const Bearer bearer) {
-        const auto r = co_await redis::command(cache, "GET", "session:" + std::string{bearer.token});
+        const auto r = co_await cache.command("GET", "session:" + std::string{bearer.token});
         co_return r.as<std::optional<std::int64_t>>();
     }
 }
