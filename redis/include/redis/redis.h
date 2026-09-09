@@ -10,3 +10,4 @@
 #include "redis/client.h"
 #include "redis/command.h"
 #include "redis/commands.h"
+#include "redis/pubsub.h"
