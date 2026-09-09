@@ -103,7 +103,9 @@ namespace sql {
 
         class cell final {
         public:
-            cell(const PGresult* const res, const int row, const int col) noexcept : res_(res), row_(row), col_(col) {
+            cell(const PGresult* const res, const int row, const int col) noexcept : res_(res),
+                                                                                     row_(row),
+                                                                                     col_(col) {
             }
 
             [[nodiscard]] bool is_null() const noexcept {
@@ -135,7 +137,8 @@ namespace sql {
 
         class row final {
         public:
-            row(const PGresult* const res, const int i) noexcept : res_(res), i_(i) {
+            row(const PGresult* const res, const int i) noexcept : res_(res),
+                                                                   i_(i) {
             }
 
             [[nodiscard]] cell operator[](const std::size_t c) const {
@@ -189,8 +192,7 @@ namespace sql {
             [[nodiscard]] std::uint64_t affected() const noexcept {
                 if (!res_) return 0;
                 const std::string_view tag = PQcmdStatus(res_.get());
-                const bool write = tag.starts_with("INSERT") || tag.starts_with("UPDATE")
-                    || tag.starts_with("DELETE") || tag.starts_with("MERGE");
+                const bool write = tag.starts_with("INSERT") || tag.starts_with("UPDATE") || tag.starts_with("DELETE") || tag.starts_with("MERGE");
                 if (!write) return 0;
                 const std::string_view t = PQcmdTuples(res_.get());
                 if (t.empty()) return 0;
@@ -205,11 +207,11 @@ namespace sql {
             using iterator = detail::row_iterator<result>;
 
             [[nodiscard]] iterator begin() const noexcept {
-                return {this, 0};
+                return {.r = this, .i = 0};
             }
 
             [[nodiscard]] iterator end() const noexcept {
-                return {this, rows()};
+                return {.r = this, .i = rows()};
             }
 
             // The escape hatch the README asks for: "just call PQ* methods".
@@ -243,7 +245,8 @@ namespace sql {
                     if (st != coro::wait_status::ready) co_return std::unexpected(error{error_kind::connect, "reactor failed while connecting"});
                 }
                 PQsetnonblocking(raw, 1);
-                PQsetNoticeReceiver(raw, [](void*, const PGresult*) {}, nullptr);
+                PQsetNoticeReceiver(raw, [](void*, const PGresult*) {
+                }, nullptr);
                 c->fd_ = PQsocket(raw);
                 co_return std::move(c);
             }
@@ -268,8 +271,12 @@ namespace sql {
                 if (conn_ == nullptr || !ok_) co_return std::unexpected(error{error_kind::connection, "connection is broken"});
 
                 const detail::text_params<sizeof...(Args)> params{args...};
-                if (PQsendQueryParams(conn_, detail::stmt_key<Q>::c_str, static_cast<int>(sizeof...(Args)), nullptr,
-                                      params.values.data(), nullptr, nullptr, 0) == 0) {
+                if (PQsendQueryParams(
+                    conn_, detail::stmt_key<Q>::c_str,
+                    static_cast<int>(sizeof...(Args)), nullptr,
+                    params.values.data(), nullptr,
+                    nullptr, 0
+                ) == 0) {
                     co_return std::unexpected(broken());
                 }
 
@@ -300,16 +307,20 @@ namespace sql {
                 // a bad status; the status is the truth about the connection.
                 if (PQstatus(conn_) != CONNECTION_OK) {
                     ok_ = false;
-                    co_return std::unexpected(error{error_kind::connection,
-                                                    last ? PQresultErrorMessage(last.get()) : PQerrorMessage(conn_)});
+                    co_return std::unexpected(error{
+                        error_kind::connection,
+                        last ? PQresultErrorMessage(last.get()) : PQerrorMessage(conn_)
+                    });
                 }
                 if (!last) co_return std::unexpected(broken());
 
                 const ExecStatusType status = PQresultStatus(last.get());
                 if (status != PGRES_COMMAND_OK && status != PGRES_TUPLES_OK) {
                     const char* const sqlstate = PQresultErrorField(last.get(), PG_DIAG_SQLSTATE);
-                    co_return std::unexpected(error{error_kind::query, PQresultErrorMessage(last.get()),
-                                                    sqlstate != nullptr ? sqlstate : "UNKNOWN", static_cast<int>(status)});
+                    co_return std::unexpected(error{
+                        error_kind::query, PQresultErrorMessage(last.get()),
+                        sqlstate != nullptr ? sqlstate : "UNKNOWN", static_cast<int>(status)
+                    });
                 }
                 co_return result{std::move(last)};
             }
@@ -318,7 +329,9 @@ namespace sql {
             using clock = std::chrono::steady_clock;
 
             connection(PGconn* const conn, const io& io, const std::chrono::milliseconds query_timeout) noexcept
-                : conn_(conn), io_(io), query_timeout_(query_timeout) {
+                : conn_(conn),
+                  io_(io),
+                  query_timeout_(query_timeout) {
             }
 
             [[nodiscard]] static std::optional<clock::time_point> deadline_for(const std::chrono::milliseconds budget) noexcept {
