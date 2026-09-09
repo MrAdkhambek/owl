@@ -18,13 +18,7 @@ namespace {
     using pool_t = sql::pool<fake>;
     using lease_t = sql::lease<fake>;
 
-    struct fixture final {
-        fake::script s;
-        pool_t pool;
-
-        explicit fixture(const unsigned connections) : pool({.connections = connections, .script_ = &s}, {}) {
-        }
-    };
+    using fixture = sql_test::pool_fixture;
 
     // Starts a checkout and hands the lease out through `slot` when it lands.
     coro::task<> take(const pool_t& pool, std::optional<lease_t>& slot, std::optional<sql::error>& failure) {

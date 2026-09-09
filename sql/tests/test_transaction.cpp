@@ -21,15 +21,8 @@ namespace {
     using tx_t = sql::transaction_source<fake>;
     using outcome = std::expected<int, sql::error>;
 
-    struct fixture final {
-        fake::script s;
-        pool_t pool{{.connections = 1, .script_ = &s}, {}};
-    };
-
-    void drive(coro::task<>&& t) {
-        t.start();
-        EXPECT_TRUE(t.done());
-    }
+    using fixture = sql_test::pool_fixture;
+    using sql_test::drive;
 
     const std::vector<std::string> begin_commit{"BEGIN", "SELECT 1", "COMMIT"};
     const std::vector<std::string> begin_rollback{"BEGIN", "SELECT 1", "ROLLBACK"};

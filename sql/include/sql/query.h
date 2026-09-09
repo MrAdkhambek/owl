@@ -58,8 +58,8 @@ namespace sql {
 
     template <fstr::fstr Q, source S, bindable... Args>
     [[nodiscard]] coro::task<std::uint64_t> execute(const S& src, const Args&... args) {
-        auto r = co_await try_execute<Q>(src, args...);
+        auto r = co_await try_query<Q>(src, args...);
         if (!r) throw std::move(r.error());
-        co_return *r;
+        co_return static_cast<std::uint64_t>(r->affected());
     }
 }

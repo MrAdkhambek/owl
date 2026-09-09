@@ -74,8 +74,9 @@ as a string, or parsed into a number; BLOB as `sql::blob`; every other pairing
 throws rather than guesses. NULL into a non-optional throws. All of those throw
 `sql::error` with `kind() == conversion`.
 
-`affected()` is the rows a write touched and 0 for a read on both drivers
-(libpq's own count for a SELECT is the rows returned; the driver maps it to 0).
+`affected()` is the count of an INSERT, UPDATE, DELETE or MERGE and 0 for
+anything else on both drivers (libpq's own count for a SELECT is the rows
+returned; the driver reads it as 0).
 
 ## Errors
 

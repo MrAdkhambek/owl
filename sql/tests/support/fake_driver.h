@@ -3,7 +3,10 @@
 // A driver whose behaviour is a script: what open() answers, what execute()
 // answers, which rows come back, and whether a call parks until the test
 // resumes it. Enough to drive pool, query and transaction without a
-// database, on one thread, deterministically.
+// database, on one thread, deterministically. The fixture and driver the
+// fake-driver tests share live here too.
+
+#include <gtest/gtest.h>
 
 #include <coroutine>
 #include <cstddef>
@@ -13,8 +16,6 @@
 #include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
-#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -23,8 +24,10 @@
 
 #include <sql/concepts.h>
 #include <sql/convert.h>
+#include <sql/detail/rows.h>
 #include <sql/detail/stmt_key.h>
 #include <sql/error.h>
+#include <sql/pool.h>
 
 namespace sql_test {
     struct fake final {
@@ -82,105 +85,20 @@ namespace sql_test {
             const std::optional<std::string>* v_;
         };
 
-        class result;
+        using result = sql::detail::rows_result<std::optional<std::string>, cell>;
 
-        class row final {
-        public:
-            row(const result* const r, const std::size_t i) noexcept : r_(r), i_(i) {
+        // Columns are named c0, c1, ... after the first row's width.
+        static result make_result(std::vector<cells> rows, const std::uint64_t affected) {
+            const std::size_t width = rows.empty() ? 0 : rows.front().size();
+            std::vector<std::string> names;
+            for (std::size_t i = 0; i < width; ++i) names.push_back("c" + std::to_string(i));
+            std::vector<std::optional<std::string>> flat;
+            flat.reserve(rows.size() * width);
+            for (auto& r : rows) {
+                for (auto& c : r) flat.push_back(std::move(c));
             }
-
-            [[nodiscard]] cell operator[](std::size_t c) const;
-            [[nodiscard]] cell operator[](std::string_view name) const;
-
-            template <typename... Ts>
-            [[nodiscard]] auto as() const {
-                if (width() != sizeof...(Ts)) {
-                    throw sql::error{sql::error_kind::conversion, "column count does not match the requested types"};
-                }
-                if constexpr (sizeof...(Ts) == 1) {
-                    return (*this)[0].template as<Ts...>();
-                } else {
-                    return as_tuple<Ts...>(std::index_sequence_for<Ts...>{});
-                }
-            }
-
-        private:
-            [[nodiscard]] std::size_t width() const noexcept;
-
-            template <typename... Ts, std::size_t... Is>
-            std::tuple<Ts...> as_tuple(std::index_sequence<Is...>) const {
-                return std::tuple<Ts...>{(*this)[Is].template as<Ts>()...};
-            }
-
-            const result* r_;
-            std::size_t i_;
-        };
-
-        class result final {
-        public:
-            result() = default;
-
-            result(std::vector<cells> rows, const std::uint64_t affected) : rows_(std::move(rows)), affected_(affected) {
-                const std::size_t width = rows_.empty() ? 0 : rows_.front().size();
-                for (std::size_t i = 0; i < width; ++i) names_.push_back("c" + std::to_string(i));
-            }
-
-            [[nodiscard]] std::size_t rows() const noexcept {
-                return rows_.size();
-            }
-
-            [[nodiscard]] std::size_t columns() const noexcept {
-                return names_.size();
-            }
-
-            [[nodiscard]] std::uint64_t affected() const noexcept {
-                return affected_;
-            }
-
-            [[nodiscard]] row operator[](const std::size_t i) const {
-                if (i >= rows_.size()) throw sql::error{sql::error_kind::conversion, "row index out of range"};
-                return row{this, i};
-            }
-
-            struct iterator final {
-                const result* r;
-                std::size_t i;
-
-                row operator*() const {
-                    return row{r, i};
-                }
-
-                iterator& operator++() {
-                    ++i;
-                    return *this;
-                }
-
-                bool operator==(const iterator& o) const {
-                    return i == o.i;
-                }
-            };
-
-            [[nodiscard]] iterator begin() const noexcept {
-                return {this, 0};
-            }
-
-            [[nodiscard]] iterator end() const noexcept {
-                return {this, rows_.size()};
-            }
-
-            [[nodiscard]] const cells& at(const std::size_t i) const {
-                return rows_[i];
-            }
-
-            [[nodiscard]] const std::vector<std::string>& names() const noexcept {
-                return names_;
-            }
-
-        private:
-            std::vector<cells> rows_;
-            std::vector<std::string> names_;
-            std::uint64_t affected_ = 0;
-        };
+            return result{std::move(names), std::move(flat), affected};
+        }
 
         class connection final {
         public:
@@ -231,7 +149,7 @@ namespace sql_test {
                     rows = std::move(s_->rows.front());
                     s_->rows.pop_front();
                 }
-                co_return result{std::move(rows), affected};
+                co_return make_result(std::move(rows), affected);
             }
 
         private:
@@ -256,23 +174,21 @@ namespace sql_test {
         };
     };
 
-    inline std::size_t fake::row::width() const noexcept {
-        return r_->columns();
-    }
-
-    inline fake::cell fake::row::operator[](const std::size_t c) const {
-        const auto& cs = r_->at(i_);
-        if (c >= cs.size()) throw sql::error{sql::error_kind::conversion, "column index out of range"};
-        return cell{&cs[c]};
-    }
-
-    inline fake::cell fake::row::operator[](const std::string_view name) const {
-        const auto& n = r_->names();
-        for (std::size_t i = 0; i < n.size(); ++i) {
-            if (n[i] == name) return (*this)[i];
-        }
-        throw sql::error{sql::error_kind::conversion, "no such column: " + std::string{name}};
-    }
-
     static_assert(sql::driver<fake>);
+
+    // A scripted pool on one thread, the way every fake-driver test starts.
+    struct pool_fixture final {
+        fake::script s;
+        sql::pool<fake> pool;
+
+        explicit pool_fixture(const unsigned connections = 1) : pool({.connections = connections, .script_ = &s}, {}) {
+        }
+    };
+
+    // Runs a task that must finish without parking: the point of the
+    // single-threaded tests is that nothing waits on anything external.
+    inline void drive(coro::task<>&& t) {
+        t.start();
+        EXPECT_TRUE(t.done());
+    }
 }

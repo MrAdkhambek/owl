@@ -125,10 +125,6 @@ namespace sql {
         if (auto committed = co_await conn.template execute<detail::commit_sql>(); !committed) {
             co_return std::unexpected(std::move(committed.error()));
         }
-        if constexpr (std::is_void_v<T>) {
-            co_return outcome_t{};
-        } else {
-            co_return std::move(**outcome);
-        }
+        co_return std::move(*outcome);
     }
 }

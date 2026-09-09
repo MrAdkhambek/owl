@@ -31,7 +31,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -43,6 +42,7 @@
 
 #include "sql/concepts.h"
 #include "sql/convert.h"
+#include "sql/detail/rows.h"
 #include "sql/detail/stmt_key.h"
 #include "sql/error.h"
 #include "sql/io.h"
@@ -152,28 +152,14 @@ namespace sql {
                 return cell{res_, i_, c};
             }
 
-            // Exactly the row's width: a tuple narrower than the row is a
-            // mistake this cannot tell from the intended one, so it refuses.
             template <typename... Ts>
             [[nodiscard]] auto as() const {
-                if (width() != sizeof...(Ts)) {
-                    throw error{error_kind::conversion, "column count does not match the requested types"};
-                }
-                if constexpr (sizeof...(Ts) == 1) {
-                    return (*this)[0].template as<Ts...>();
-                } else {
-                    return as_tuple<Ts...>(std::index_sequence_for<Ts...>{});
-                }
+                return detail::row_as<Ts...>(*this, width());
             }
 
         private:
             [[nodiscard]] std::size_t width() const noexcept {
                 return static_cast<std::size_t>(PQnfields(res_));
-            }
-
-            template <typename... Ts, std::size_t... Is>
-            std::tuple<Ts...> as_tuple(std::index_sequence<Is...>) const {
-                return std::tuple<Ts...>{(*this)[Is].template as<Ts>()...};
             }
 
             const PGresult* res_;
@@ -195,18 +181,17 @@ namespace sql {
                 return res_ ? static_cast<std::size_t>(PQnfields(res_.get())) : 0;
             }
 
-            // Rows a write touched. PQcmdTuples is the command tag's count,
-            // which for a SELECT is the rows returned, not rows affected; a
-            // read reports 0 here, as the sqlite driver does, so execute<>
-            // means the same thing on both drivers. INSERT ... RETURNING also
-            // answers TUPLES_OK, but its tag is "INSERT", so it keeps its
-            // count. Empty is a command with no count at all.
+            // Rows a write touched: the count in an INSERT, UPDATE, DELETE or
+            // MERGE command tag, RETURNING or not. Every other tag reads as
+            // 0, as a read does on the sqlite driver, so execute<> means the
+            // same thing on both: PQcmdTuples also carries a count for
+            // SELECT, FETCH and MOVE, where it is rows returned or skipped.
             [[nodiscard]] std::uint64_t affected() const noexcept {
                 if (!res_) return 0;
-                if (PQresultStatus(res_.get()) == PGRES_TUPLES_OK) {
-                    const std::string_view tag = PQcmdStatus(res_.get());
-                    if (tag.starts_with("SELECT")) return 0;
-                }
+                const std::string_view tag = PQcmdStatus(res_.get());
+                const bool write = tag.starts_with("INSERT") || tag.starts_with("UPDATE")
+                    || tag.starts_with("DELETE") || tag.starts_with("MERGE");
+                if (!write) return 0;
                 const std::string_view t = PQcmdTuples(res_.get());
                 if (t.empty()) return 0;
                 return from_text<std::uint64_t>(t).value_or(0);
@@ -217,23 +202,7 @@ namespace sql {
                 return row{res_.get(), static_cast<int>(i)};
             }
 
-            struct iterator final {
-                const result* r;
-                std::size_t i;
-
-                row operator*() const {
-                    return (*r)[i];
-                }
-
-                iterator& operator++() {
-                    ++i;
-                    return *this;
-                }
-
-                bool operator==(const iterator& o) const {
-                    return i == o.i;
-                }
-            };
+            using iterator = detail::row_iterator<result>;
 
             [[nodiscard]] iterator begin() const noexcept {
                 return {this, 0};
@@ -309,7 +278,7 @@ namespace sql {
                     const int flushed = PQflush(conn_);
                     if (flushed == 0) break;
                     if (flushed < 0) co_return std::unexpected(broken());
-                    if (auto failed = co_await wait_for(coro::interest::write, deadline)) {
+                    if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::write, remaining(deadline)))) {
                         co_return std::unexpected(std::move(*failed));
                     }
                 }
@@ -317,7 +286,7 @@ namespace sql {
                 pgresult_ptr last;
                 for (;;) {
                     while (PQisBusy(conn_) != 0) {
-                        if (auto failed = co_await wait_for(coro::interest::read, deadline)) {
+                        if (auto failed = after_wait(co_await io_.wait(fd_, coro::interest::read, remaining(deadline)))) {
                             co_return std::unexpected(std::move(*failed));
                         }
                         if (PQconsumeInput(conn_) == 0) co_return std::unexpected(broken());
@@ -363,19 +332,17 @@ namespace sql {
                 return left.count() < 0 ? std::chrono::milliseconds{0} : left;
             }
 
-            // One readiness wait against the connection's fd. nullopt means
-            // ready; otherwise the error to report, with the connection
+            // What one readiness wait on the connection's fd came to. nullopt
+            // means ready; otherwise the error to report, with the connection
             // already finished (timeout) or marked broken (anything else).
-            [[nodiscard]] coro::task<std::optional<error>>
-            wait_for(const coro::interest want, const std::optional<clock::time_point> deadline) {
-                const auto st = co_await io_.wait(fd_, want, remaining(deadline));
-                if (st == coro::wait_status::ready) co_return std::nullopt;
+            [[nodiscard]] std::optional<error> after_wait(const coro::wait_status st) {
+                if (st == coro::wait_status::ready) return std::nullopt;
                 if (st == coro::wait_status::timeout) {
                     finish();
-                    co_return error{error_kind::timeout, "query timed out"};
+                    return error{error_kind::timeout, "query timed out"};
                 }
                 ok_ = false;
-                co_return error{error_kind::connection, "reactor failed while waiting on the connection"};
+                return error{error_kind::connection, "reactor failed while waiting on the connection"};
             }
 
             [[nodiscard]] error broken() noexcept {

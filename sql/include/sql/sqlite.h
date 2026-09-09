@@ -16,10 +16,10 @@
 //
 // Placeholders are $1..$N, shared with psql. sqlite numbers them by order
 // of first appearance -- `select $2, $1` gives $1 index 2 -- so argument k
-// is bound through sqlite3_bind_parameter_index("$k"), never by position.
-// Statements are cached per connection, keyed by the literal's identity.
-// One statement per literal: sqlite3_prepare_v2 stops at the first
-// semicolon and the tail is ignored.
+// is bound through the index sqlite3_bind_parameter_index("$k") answers,
+// resolved once when the statement is prepared. Statements are cached per
+// connection, keyed by the literal's identity. One statement per literal:
+// sqlite3_prepare_v2 stops at the first semicolon and the tail is ignored.
 
 #include <chrono>
 #include <concepts>
@@ -31,7 +31,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -46,6 +45,7 @@
 
 #include "sql/concepts.h"
 #include "sql/convert.h"
+#include "sql/detail/rows.h"
 #include "sql/detail/stmt_key.h"
 #include "sql/error.h"
 #include "sql/io.h"
@@ -147,102 +147,8 @@ namespace sql {
             const value* v_;
         };
 
-        // Declared before result so the friend declarations inside it bind
-        // to this nested class; a friend whose name is not yet declared
-        // would mint a new sql::connection in the namespace instead.
-        class connection;
-
-        class result;
-
-        class row final {
-        public:
-            row(const result* const r, const std::size_t i) noexcept : r_(r), i_(i) {
-            }
-
-            [[nodiscard]] cell operator[](std::size_t c) const;
-            [[nodiscard]] cell operator[](std::string_view name) const;
-
-            // Exactly the row's width: a tuple narrower than the row is a
-            // mistake this cannot tell from the intended one, so it refuses.
-            template <typename... Ts>
-            [[nodiscard]] auto as() const {
-                if (width() != sizeof...(Ts)) {
-                    throw error{error_kind::conversion, "column count does not match the requested types"};
-                }
-                if constexpr (sizeof...(Ts) == 1) {
-                    return (*this)[0].template as<Ts...>();
-                } else {
-                    return as_tuple<Ts...>(std::index_sequence_for<Ts...>{});
-                }
-            }
-
-        private:
-            [[nodiscard]] std::size_t width() const noexcept;
-
-            template <typename... Ts, std::size_t... Is>
-            std::tuple<Ts...> as_tuple(std::index_sequence<Is...>) const {
-                return std::tuple<Ts...>{(*this)[Is].template as<Ts>()...};
-            }
-
-            const result* r_;
-            std::size_t i_;
-        };
-
-        class result final {
-        public:
-            result() = default;
-
-            [[nodiscard]] std::size_t rows() const noexcept {
-                return rows_.size();
-            }
-
-            [[nodiscard]] std::size_t columns() const noexcept {
-                return names_.size();
-            }
-
-            [[nodiscard]] std::uint64_t affected() const noexcept {
-                return affected_;
-            }
-
-            [[nodiscard]] row operator[](const std::size_t i) const {
-                if (i >= rows_.size()) throw error{error_kind::conversion, "row index out of range"};
-                return row{this, i};
-            }
-
-            struct iterator final {
-                const result* r;
-                std::size_t i;
-
-                row operator*() const {
-                    return row{r, i};
-                }
-
-                iterator& operator++() {
-                    ++i;
-                    return *this;
-                }
-
-                bool operator==(const iterator& o) const {
-                    return i == o.i;
-                }
-            };
-
-            [[nodiscard]] iterator begin() const noexcept {
-                return {this, 0};
-            }
-
-            [[nodiscard]] iterator end() const noexcept {
-                return {this, rows_.size()};
-            }
-
-        private:
-            friend class connection;
-            friend class row;
-
-            std::vector<std::string> names_;
-            std::vector<std::vector<value>> rows_;
-            std::uint64_t affected_ = 0;
-        };
+        using result = detail::rows_result<value, cell>;
+        using row = result::row;
 
         class connection final {
         public:
@@ -260,7 +166,7 @@ namespace sql {
             // thread is idle: sequential use from another thread is what
             // SQLITE_OPEN_NOMUTEX permits.
             ~connection() {
-                for (const auto& [id, stmt] : stmts_) sqlite3_finalize(stmt);
+                for (const auto& [id, prepared] : stmts_) sqlite3_finalize(prepared.stmt);
                 if (db_ != nullptr) sqlite3_close(db_);
             }
 
@@ -288,6 +194,24 @@ namespace sql {
             }
 
         private:
+            // A cached statement with its $k -> sqlite index map, so a bind
+            // never looks a name up again.
+            struct statement final {
+                sqlite3_stmt* stmt;
+                std::vector<int> params;
+            };
+
+            // Reset and unbind on every way out of run_on_thread, so a failed
+            // bind or step never leaves the cached statement mid-flight.
+            struct reset_guard final {
+                sqlite3_stmt* stmt;
+
+                ~reset_guard() {
+                    sqlite3_reset(stmt);
+                    sqlite3_clear_bindings(stmt);
+                }
+            };
+
             explicit connection(const io& io) noexcept : io_(io), thread_(1) {
             }
 
@@ -309,60 +233,52 @@ namespace sql {
 
             template <fstr::fstr Q, bindable... Args>
             [[nodiscard]] std::expected<result, error> run_on_thread(const Args&... args) noexcept {
-                sqlite3_stmt* const stmt = prepared<Q>();
-                if (stmt == nullptr) return std::unexpected(failure(sqlite3_extended_errcode(db_)));
+                const statement* const prepared = this->prepared<Q>();
+                if (prepared == nullptr) return std::unexpected(failure(sqlite3_extended_errcode(db_)));
+                sqlite3_stmt* const stmt = prepared->stmt;
+                const reset_guard guard{stmt};
 
-                [[maybe_unused]] int k = 0;
+                // An index of 0 is sqlite's own "no such parameter", which
+                // bind answers with SQLITE_RANGE.
+                [[maybe_unused]] std::size_t k = 0;
                 int rc = SQLITE_OK;
-                ((rc = rc == SQLITE_OK ? bind_one(stmt, ++k, args) : rc), ...);
-                if (rc != SQLITE_OK) {
-                    error e = failure(rc);
-                    sqlite3_reset(stmt);
-                    sqlite3_clear_bindings(stmt);
-                    return std::unexpected(std::move(e));
-                }
+                ((rc = rc == SQLITE_OK ? bind_at(stmt, k < prepared->params.size() ? prepared->params[k] : 0, args) : rc, ++k), ...);
+                if (rc != SQLITE_OK) return std::unexpected(failure(rc));
 
-                result out;
                 const int ncol = sqlite3_column_count(stmt);
-                out.names_.reserve(static_cast<std::size_t>(ncol));
-                for (int i = 0; i < ncol; ++i) out.names_.emplace_back(sqlite3_column_name(stmt, i));
+                std::vector<std::string> names;
+                names.reserve(static_cast<std::size_t>(ncol));
+                for (int i = 0; i < ncol; ++i) names.emplace_back(sqlite3_column_name(stmt, i));
+                std::vector<value> cells;
                 for (;;) {
                     rc = sqlite3_step(stmt);
                     if (rc == SQLITE_ROW) {
-                        out.rows_.push_back(read_row(stmt, ncol));
+                        read_row(stmt, ncol, cells);
                         continue;
                     }
                     if (rc == SQLITE_DONE) break;
-                    error e = failure(rc);
-                    sqlite3_reset(stmt);
-                    sqlite3_clear_bindings(stmt);
-                    return std::unexpected(std::move(e));
+                    return std::unexpected(failure(rc));
                 }
-                if (!sqlite3_stmt_readonly(stmt)) out.affected_ = static_cast<std::uint64_t>(sqlite3_changes64(db_));
-                sqlite3_reset(stmt);
-                sqlite3_clear_bindings(stmt);
-                return out;
+                const std::uint64_t affected = sqlite3_stmt_readonly(stmt) ? 0 : static_cast<std::uint64_t>(sqlite3_changes64(db_));
+                return result{std::move(names), std::move(cells), affected};
             }
 
             template <fstr::fstr Q>
-            [[nodiscard]] sqlite3_stmt* prepared() noexcept {
+            [[nodiscard]] const statement* prepared() noexcept {
                 const auto it = stmts_.find(detail::stmt_key<Q>::id);
-                if (it != stmts_.end()) return it->second;
+                if (it != stmts_.end()) return &it->second;
                 sqlite3_stmt* stmt = nullptr;
                 const int rc = sqlite3_prepare_v2(db_, detail::stmt_key<Q>::c_str,
                                                   static_cast<int>(detail::stmt_key<Q>::text.size()), &stmt, nullptr);
                 if (rc != SQLITE_OK || stmt == nullptr) return nullptr;
-                stmts_.emplace(detail::stmt_key<Q>::id, stmt);
-                return stmt;
-            }
-
-            template <bindable T>
-            [[nodiscard]] static int bind_one(sqlite3_stmt* const stmt, const int k, const T& v) noexcept {
-                char name[8];
-                std::snprintf(name, sizeof name, "$%d", k);
-                const int idx = sqlite3_bind_parameter_index(stmt, name);
-                if (idx == 0) return SQLITE_RANGE;
-                return bind_at(stmt, idx, v);
+                std::vector<int> params;
+                params.reserve(detail::stmt_key<Q>::scan.count);
+                for (std::size_t k = 1; k <= detail::stmt_key<Q>::scan.count; ++k) {
+                    char name[16];
+                    std::snprintf(name, sizeof name, "$%u", static_cast<unsigned>(k));
+                    params.push_back(sqlite3_bind_parameter_index(stmt, name));
+                }
+                return &stmts_.emplace(detail::stmt_key<Q>::id, statement{stmt, std::move(params)}).first->second;
             }
 
             // SQLITE_STATIC everywhere: the argument outlives the step loop
@@ -382,7 +298,7 @@ namespace sql {
                 } else if constexpr (std::floating_point<U>) {
                     return sqlite3_bind_double(stmt, idx, static_cast<double>(v));
                 } else if constexpr (detail::text_like<U>) {
-                    const std::string_view s = detail::text_of(v);
+                    const std::string_view s{v};
                     return sqlite3_bind_text64(stmt, idx, s.data(), s.size(), SQLITE_STATIC, SQLITE_UTF8);
                 } else {
                     const blob_view b{v};
@@ -393,9 +309,7 @@ namespace sql {
                 }
             }
 
-            [[nodiscard]] static std::vector<value> read_row(sqlite3_stmt* const stmt, const int ncol) {
-                std::vector<value> cells;
-                cells.reserve(static_cast<std::size_t>(ncol));
+            static void read_row(sqlite3_stmt* const stmt, const int ncol, std::vector<value>& cells) {
                 for (int i = 0; i < ncol; ++i) {
                     switch (sqlite3_column_type(stmt, i)) {
                         case SQLITE_INTEGER:
@@ -421,7 +335,6 @@ namespace sql {
                             break;
                     }
                 }
-                return cells;
             }
 
             // The families that mean the handle itself is no longer trustworthy
@@ -438,28 +351,10 @@ namespace sql {
             io io_;
             coro::static_thread_pool thread_;
             sqlite3* db_ = nullptr;
-            std::unordered_map<const void*, sqlite3_stmt*> stmts_;
+            std::unordered_map<const void*, statement> stmts_;
             bool ok_ = true;
         };
     };
-
-    inline std::size_t sqlite::row::width() const noexcept {
-        return r_->columns();
-    }
-
-    inline sqlite::cell sqlite::row::operator[](const std::size_t c) const {
-        const auto& cells = r_->rows_[i_];
-        if (c >= cells.size()) throw error{error_kind::conversion, "column index out of range"};
-        return cell{&cells[c]};
-    }
-
-    inline sqlite::cell sqlite::row::operator[](const std::string_view name) const {
-        const auto& names = r_->names_;
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            if (names[i] == name) return (*this)[i];
-        }
-        throw error{error_kind::conversion, "no such column: " + std::string{name}};
-    }
 
     static_assert(driver<sqlite>);
 }

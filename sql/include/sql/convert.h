@@ -33,19 +33,6 @@ namespace sql {
         template <typename T>
         inline constexpr bool is_optional_v<std::optional<T>> = true;
 
-        template <typename T>
-        struct optional_value {
-            using type = T;
-        };
-
-        template <typename T>
-        struct optional_value<std::optional<T>> {
-            using type = T;
-        };
-
-        template <typename T>
-        using optional_value_t = typename optional_value<T>::type;
-
         // bool and char are integral to the language but not to SQL: a
         // char would bind as a number, which is never what was meant.
         template <typename T>
@@ -64,18 +51,6 @@ namespace sql {
         template <typename T>
         concept scalar_bindable = std::same_as<T, bool> || sql_integral<T> || std::floating_point<T>
             || text_like<T> || bytes_like<T>;
-
-        [[nodiscard]] inline std::string_view text_of(const std::string& s) noexcept {
-            return s;
-        }
-
-        [[nodiscard]] inline std::string_view text_of(const std::string_view s) noexcept {
-            return s;
-        }
-
-        [[nodiscard]] inline std::string_view text_of(const char* const s) noexcept {
-            return s;
-        }
 
         [[nodiscard]] inline std::string hex_of(const blob_view bytes) {
             static constexpr char digits[] = "0123456789abcdef";
@@ -131,7 +106,7 @@ namespace sql {
     concept bindable = detail::scalar_bindable<std::remove_cvref_t<T>>
         || std::same_as<std::remove_cvref_t<T>, std::nullopt_t>
         || (detail::is_optional_v<std::remove_cvref_t<T>>
-            && detail::scalar_bindable<detail::optional_value_t<std::remove_cvref_t<T>>>);
+            && detail::scalar_bindable<typename std::remove_cvref_t<T>::value_type>);
 
     // The text form a text-format driver sends. nullopt is SQL NULL, which is
     // why the return is optional rather than a string that could never say
@@ -151,7 +126,7 @@ namespace sql {
             const auto [end, ec] = std::to_chars(buf, buf + sizeof buf, value);
             return std::string{buf, end};
         } else if constexpr (detail::text_like<U>) {
-            return std::string{detail::text_of(value)};
+            return std::string{std::string_view{value}};
         } else {
             return detail::hex_of(blob_view{value});
         }

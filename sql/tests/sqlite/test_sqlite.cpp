@@ -2,12 +2,10 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <filesystem>
 #include <optional>
 #include <string>
 #include <thread>
 #include <tuple>
-#include <unistd.h>
 
 #include <sqlite3.h>
 
@@ -21,24 +19,12 @@
 #include <sql/sqlite.h>
 #include <sql/transaction.h>
 
+#include "support/temp_db.h"
+
 using namespace std::chrono_literals;
 
 namespace {
-    struct temp_db final {
-        std::filesystem::path path;
-
-        explicit temp_db(const std::string& name)
-            : path(std::filesystem::temp_directory_path() / ("owl_sql_" + std::to_string(::getpid()) + "_" + name + ".db")) {
-            std::filesystem::remove(path);
-        }
-
-        ~temp_db() {
-            std::filesystem::remove(path);
-            std::filesystem::remove(path.string() + "-journal");
-            std::filesystem::remove(path.string() + "-wal");
-            std::filesystem::remove(path.string() + "-shm");
-        }
-    };
+    using sql_test::temp_db;
 
     struct fixture final {
         temp_db file;

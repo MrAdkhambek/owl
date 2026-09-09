@@ -19,15 +19,8 @@ namespace {
     using fake = sql_test::fake;
     using pool_t = sql::pool<fake>;
 
-    struct fixture final {
-        fake::script s;
-        pool_t pool{{.connections = 1, .script_ = &s}, {}};
-    };
-
-    void drive(coro::task<>&& t) {
-        t.start();
-        EXPECT_TRUE(t.done());
-    }
+    using fixture = sql_test::pool_fixture;
+    using sql_test::drive;
 }
 
 TEST(Query, TypesLineUpWithTheDriver) {

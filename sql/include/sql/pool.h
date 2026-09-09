@@ -122,7 +122,7 @@ namespace sql {
 
         [[nodiscard]] coro::task<std::expected<lease<D>, error>> checkout() const {
             for (;;) {
-                if (closed_) co_return std::unexpected(error{error_kind::closed, "pool is closed"});
+                if (closed_) co_return std::unexpected(closed_error());
                 if (!idle_.empty()) {
                     connection* const c = idle_.back();
                     idle_.pop_back();
@@ -132,7 +132,7 @@ namespace sql {
                     ++opening_;
                     auto opened = co_await connection::open(cfg_, io_);
                     --opening_;
-                    if (closed_) co_return std::unexpected(error{error_kind::closed, "pool is closed"});
+                    if (closed_) co_return std::unexpected(closed_error());
                     if (!opened) {
                         // The slot is free again; a waiter parked meanwhile
                         // must get its own chance to open.
@@ -145,7 +145,7 @@ namespace sql {
                 }
                 waiter w{};
                 co_await park{this, &w};
-                if (w.closed) co_return std::unexpected(error{error_kind::closed, "pool is closed"});
+                if (w.closed) co_return std::unexpected(closed_error());
                 if (w.handed != nullptr) co_return lease<D>{w.handed, this};
                 // Woken because a slot freed up: loop and open.
             }
@@ -154,7 +154,7 @@ namespace sql {
         void close() {
             if (closed_) return;
             closed_ = true;
-            while (waiter* const w = pop_waiter()) {
+            while (waiter* const w = waiters_.pop()) {
                 w->closed = true;
                 resume(w);
             }
@@ -172,7 +172,7 @@ namespace sql {
 
         [[nodiscard]] std::size_t waiting() const noexcept {
             std::size_t n = 0;
-            for (const waiter* w = head_; w != nullptr; w = w->next) ++n;
+            for (const waiter* w = waiters_.head; w != nullptr; w = w->next) ++n;
             return n;
         }
 
@@ -186,6 +186,29 @@ namespace sql {
             bool closed = false;
         };
 
+        // Intrusive FIFO over the waiter nodes, which live in the parked
+        // coroutines' frames: nothing is allocated to wait.
+        struct waiter_queue final {
+            waiter* head{};
+            waiter* tail{};
+
+            void push(waiter* const w) noexcept {
+                w->next = nullptr;
+                if (tail != nullptr) tail->next = w;
+                else head = w;
+                tail = w;
+            }
+
+            [[nodiscard]] waiter* pop() noexcept {
+                waiter* const w = head;
+                if (w == nullptr) return nullptr;
+                head = w->next;
+                if (head == nullptr) tail = nullptr;
+                w->next = nullptr;
+                return w;
+            }
+        };
+
         struct park final {
             const pool* self;
             waiter* w;
@@ -196,7 +219,7 @@ namespace sql {
 
             void await_suspend(const std::coroutine_handle<> h) const {
                 w->h = h;
-                self->push_waiter(w);
+                self->waiters_.push(w);
             }
 
             void await_resume() const noexcept {
@@ -209,7 +232,7 @@ namespace sql {
                 wake_one();
                 return;
             }
-            if (waiter* const w = pop_waiter()) {
+            if (waiter* const w = waiters_.pop()) {
                 w->handed = c;
                 resume(w);
                 return;
@@ -218,7 +241,11 @@ namespace sql {
         }
 
         void wake_one() const noexcept {
-            if (waiter* const w = pop_waiter()) resume(w);
+            if (waiter* const w = waiters_.pop()) resume(w);
+        }
+
+        [[nodiscard]] static error closed_error() {
+            return error{error_kind::closed, "pool is closed"};
         }
 
         // The drain loop. A resumption that happens while one is already
@@ -227,12 +254,12 @@ namespace sql {
         // stays one whatever the chain length.
         void resume(waiter* const w) const noexcept {
             if (draining_) {
-                push_ready(w);
+                ready_.push(w);
                 return;
             }
             draining_ = true;
             w->h.resume();
-            while (waiter* const next = pop_ready()) next->h.resume();
+            while (waiter* const next = ready_.pop()) next->h.resume();
             draining_ = false;
         }
 
@@ -242,47 +269,13 @@ namespace sql {
             });
         }
 
-        void push_waiter(waiter* const w) const noexcept {
-            w->next = nullptr;
-            if (tail_ != nullptr) tail_->next = w;
-            else head_ = w;
-            tail_ = w;
-        }
-
-        [[nodiscard]] waiter* pop_waiter() const noexcept {
-            waiter* const w = head_;
-            if (w == nullptr) return nullptr;
-            head_ = w->next;
-            if (head_ == nullptr) tail_ = nullptr;
-            w->next = nullptr;
-            return w;
-        }
-
-        void push_ready(waiter* const w) const noexcept {
-            w->next = nullptr;
-            if (ready_tail_ != nullptr) ready_tail_->next = w;
-            else ready_head_ = w;
-            ready_tail_ = w;
-        }
-
-        [[nodiscard]] waiter* pop_ready() const noexcept {
-            waiter* const w = ready_head_;
-            if (w == nullptr) return nullptr;
-            ready_head_ = w->next;
-            if (ready_head_ == nullptr) ready_tail_ = nullptr;
-            w->next = nullptr;
-            return w;
-        }
-
         typename D::config cfg_;
         typename D::io io_;
         unsigned limit_;
         mutable std::vector<std::unique_ptr<connection>> connections_;
         mutable std::vector<connection*> idle_;
-        mutable waiter* head_{};
-        mutable waiter* tail_{};
-        mutable waiter* ready_head_{};
-        mutable waiter* ready_tail_{};
+        mutable waiter_queue waiters_;
+        mutable waiter_queue ready_;
         mutable unsigned opening_ = 0;
         mutable bool closed_ = false;
         mutable bool draining_ = false;
