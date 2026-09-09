@@ -34,6 +34,15 @@
 #include "owl/core/token.h"
 #include "owl/util/util.h"
 
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <sql/pool.h>
+#include <sql/psql.h>
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <sql/pool.h>
+#include <sql/sqlite.h>
+#endif
+
 namespace owl {
     namespace detail {
         // Every KickToken factory shares one shape -- a message in, an
@@ -251,6 +260,32 @@ namespace owl {
             return KickToken::internal_error("not on an h2o worker");
         }
     };
+
+#ifdef OWL_ENABLE_POSTGRESQL
+    // The worker's postgres pool. A Context member outlives the request,
+    // which is the FromContextRef guarantee; handlers take
+    // const sql::pool<sql::psql>& -- a source is a capability, not state the
+    // handler mutates. An empty optional (with_psql never called) is a
+    // wiring mistake, so it kicks 500 rather than anything 4xx.
+    template <>
+    struct FromContextRef<sql::pool<sql::psql>> {
+        template <typename S>
+        std::expected<const sql::pool<sql::psql>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (ctx.psql) return &*ctx.psql;
+            return KickToken::internal_error("postgres pool is not wired");
+        }
+    };
+#endif
+#ifdef OWL_ENABLE_SQLITE
+    template <>
+    struct FromContextRef<sql::pool<sql::sqlite>> {
+        template <typename S>
+        std::expected<const sql::pool<sql::sqlite>*, KickToken> operator()(const Context<S>& ctx, const Request&) const {
+            if (ctx.sqlite) return &*ctx.sqlite;
+            return KickToken::internal_error("sqlite pool is not wired");
+        }
+    };
+#endif
 
     // The handler-parameter contract, read in the spelling the handler
     // declared: a by-value T extracts a value through FromContext<T>; a

@@ -21,6 +21,17 @@
 #include "owl/routing/router.h"
 #include "owl/detail.h"
 
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <optional>
+
+#include <sql/psql.h>
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <optional>
+
+#include <sql/sqlite.h>
+#endif
+
 namespace owl {
     struct Config {
         std::string address = "127.0.0.1";
@@ -65,6 +76,24 @@ namespace owl {
                 return std::forward<Self>(self);
             }
 
+#ifdef OWL_ENABLE_POSTGRESQL
+            // Per-worker postgres connections. Defined only under the
+            // macro, so calling it without the option is a compile error.
+            template <typename Self>
+            [[nodiscard]] auto&& with_psql(this Self&& self, sql::psql::config cfg) {
+                self.psql_config_ = std::move(cfg);
+                return std::forward<Self>(self);
+            }
+#endif
+#ifdef OWL_ENABLE_SQLITE
+            // Per-worker sqlite connections, each on its own thread.
+            template <typename Self>
+            [[nodiscard]] auto&& with_sqlite(this Self&& self, sql::sqlite::config cfg) {
+                self.sqlite_config_ = std::move(cfg);
+                return std::forward<Self>(self);
+            }
+#endif
+
             // The state is the type: build_with is the only way to finish a
             // server, so a server that never got its state is a compile error
             // rather than a null read per request.
@@ -73,13 +102,26 @@ namespace owl {
                 if (!state) throw std::invalid_argument("Server: state is required");
                 if (!self.router_) throw std::invalid_argument("Server: router is required");
                 if (!self.config_) throw std::invalid_argument("Server: config is required");
-                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)};
+                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)
+#ifdef OWL_ENABLE_POSTGRESQL
+                              , std::move(self.psql_config_)
+#endif
+#ifdef OWL_ENABLE_SQLITE
+                              , std::move(self.sqlite_config_)
+#endif
+                };
             }
 
         private:
             std::unique_ptr<Router<S>> router_;
             std::unique_ptr<Config> config_;
             MiddlewareChain<S> layers_{};
+#ifdef OWL_ENABLE_POSTGRESQL
+            std::optional<sql::psql::config> psql_config_;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+            std::optional<sql::sqlite::config> sqlite_config_;
+#endif
         };
 
         [[nodiscard]] static Builder builder() {
@@ -103,7 +145,14 @@ namespace owl {
         }
 
     private:
-        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers, std::shared_ptr<S> state)
+        Server(std::unique_ptr<Router<S>> router, std::unique_ptr<Config> config, MiddlewareChain<S> layers, std::shared_ptr<S> state
+#ifdef OWL_ENABLE_POSTGRESQL
+               , std::optional<sql::psql::config> psql_config
+#endif
+#ifdef OWL_ENABLE_SQLITE
+               , std::optional<sql::sqlite::config> sqlite_config
+#endif
+        )
             : router_(std::move(router)),
               config_(std::move(config)),
               layers_(std::move(layers)),
@@ -133,6 +182,12 @@ namespace owl {
             dispatcher->router = router_.get();
             dispatcher->server_layers = &layers_;
             std::construct_at(&dispatcher->state, state_);
+#ifdef OWL_ENABLE_POSTGRESQL
+            std::construct_at(&dispatcher->psql_config, std::move(psql_config));
+#endif
+#ifdef OWL_ENABLE_SQLITE
+            std::construct_at(&dispatcher->sqlite_config, std::move(sqlite_config));
+#endif
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
             // init workers

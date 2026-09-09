@@ -1,10 +1,22 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <type_traits>
 
 #include "owl/coro/loop_scheduler.h"
+
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <sql/pool.h>
+#include <sql/psql.h>
+
+#include "owl/coro/loop_reactor.h"
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <sql/pool.h>
+#include <sql/sqlite.h>
+#endif
 
 namespace owl {
     // Per-worker server state handed to extractors and the handler. Passed by
@@ -38,6 +50,20 @@ namespace owl {
         // posts into the void.
         owl::loop_scheduler loop;
 
+#ifdef OWL_ENABLE_POSTGRESQL
+        // The psql pool holds a reactor_ref to this reactor, so the reactor
+        // is declared first and destroyed last; a Context is neither
+        // copyable nor movable, so the address is stable. The optional is
+        // empty until on_context_init wires it, and stays empty when the
+        // builder never asked for the driver -- the extractor kicks 500.
+        owl::loop_reactor reactor;
+        std::optional<sql::pool<sql::psql>> psql;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        // Per worker like the psql pool: the sqlite connection threads post
+        // their completions back through this worker's loop_scheduler.
+        std::optional<sql::pool<sql::sqlite>> sqlite;
+#endif
     };
 
     template <typename T>

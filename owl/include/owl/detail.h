@@ -16,6 +16,16 @@
 #include <chrono>
 #include <prometheus/http.h>
 #endif
+#ifdef OWL_ENABLE_POSTGRESQL
+#include <optional>
+
+#include <sql/psql.h>
+#endif
+#ifdef OWL_ENABLE_SQLITE
+#include <optional>
+
+#include <sql/sqlite.h>
+#endif
 
 namespace owl::detail {
     struct Worker {
@@ -30,6 +40,12 @@ namespace owl::detail {
         const Router<S>* router;
         const MiddlewareChain<S>* server_layers;
         std::shared_ptr<S> state;
+#ifdef OWL_ENABLE_POSTGRESQL
+        std::optional<sql::psql::config> psql_config;
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        std::optional<sql::sqlite::config> sqlite_config;
+#endif
     };
 
     struct SendJob {
@@ -104,6 +120,19 @@ namespace owl::detail {
         // safe from the pool threads.
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
         context->loop = loop_scheduler{ctx->loop, &context->hop};
+#ifdef OWL_ENABLE_POSTGRESQL
+        // Built in place: a pool is neither copyable nor movable, and the
+        // reactor_ref it takes points at this Context's own reactor.
+        context->reactor = owl::loop_reactor{ctx->loop};
+        if (dispatcher->psql_config) {
+            context->psql.emplace(*dispatcher->psql_config, sql::reactor_ref{context->reactor});
+        }
+#endif
+#ifdef OWL_ENABLE_SQLITE
+        if (dispatcher->sqlite_config) {
+            context->sqlite.emplace(*dispatcher->sqlite_config, sql::scheduler_ref{context->loop});
+        }
+#endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
 
