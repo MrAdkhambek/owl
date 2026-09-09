@@ -179,6 +179,18 @@ TEST(Transaction, VoidBody) {
     }());
 }
 
+TEST(Transaction, VoidBodyRollsBackOnAnError) {
+    fixture fx;
+    drive([&]() -> coro::task<> {
+        const auto r = co_await sql::transaction(fx.pool, [](auto) -> coro::task<std::expected<void, sql::error>> {
+            co_return std::unexpected(sql::error{sql::error_kind::query, "no"});
+        });
+        EXPECT_FALSE(r.has_value());
+        EXPECT_EQ(r.error().kind(), sql::error_kind::query);
+        EXPECT_EQ(fx.s.log, (std::vector<std::string>{"BEGIN", "ROLLBACK"}));
+    }());
+}
+
 TEST(Transaction, CheckoutFailurePropagates) {
     fixture fx;
     fx.s.opens.emplace_back(std::unexpected(sql::error{sql::error_kind::connect, "refused"}));

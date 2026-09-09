@@ -106,8 +106,8 @@ const auto total = co_await sql::transaction(pg, [](auto tx) -> coro::task<std::
 
 `BEGIN`, the body, then `COMMIT` on a value or `ROLLBACK` on an error, returned
 as-is. A body that throws is rolled back and rethrown with the connection kept.
-The body must return `coro::task<std::expected<T, sql::error>>` and takes the
-transaction source by value or by reference; it is a `source`, so every query
+The body must return `coro::task<std::expected<T, sql::error>>`, where `T` may be
+`void`, and takes the transaction source by value or by reference; it is a `source`, so every query
 function works on it. `transaction` takes only a pool: nesting is a compile error.
 
 ## Pools
