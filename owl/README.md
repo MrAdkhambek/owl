@@ -75,6 +75,8 @@ owl::Response login(owl::RequestView) {
 | `Json<T>`                            | JSON body               | 415 / 400 / 422     |
 | `State<T>`                           | router state            | 500                 |
 | `loop_scheduler`                     | the worker's event loop, bound with no copy when taken as `const&` | 500                 |
+| `const sql::pool<sql::psql>&`        | the worker's postgres pool (`-DOWL_ENABLE_POSTGRESQL=ON`) | 500                 |
+| `const sql::pool<sql::sqlite>&`      | the worker's sqlite pool (`-DOWL_ENABLE_SQLITE=ON`)       | 500                 |
 
 A custom extractor is one `FromContext` specialization — the built-ins in `extract/from_context.h` are the same protocol, and make good reference. The parameter type is the value the handler receives; the specialization answers either that value or a `KickToken`, which carries any status, so `401` needs no special support:
 
@@ -158,6 +160,10 @@ auto router = owl::Router<AppState>::make()
 
 See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_PROMETHEUS=ON`: `owl::owl` then depends on `owl::prometheus` (which itself pulls nothing), and the server records HTTP RED itself — every exchange through dispatch under its route pattern, thrown handlers as `500`, and unmatched requests (`404`/`405`, dispatch failures) counted without a duration. Your handler only serves `owl::prometheus::dump()` as `text/plain; version=0.0.4; charset=utf-8`.
 
+## SQL
+
+See [`sql/README.md`](../sql/README.md). With `-DOWL_ENABLE_POSTGRESQL=ON` and/or `-DOWL_ENABLE_SQLITE=ON`, `owl::owl` pulls `owl::sql`, the builder gains `with_psql(sql::psql::config)` and `with_sqlite(sql::sqlite::config)`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
+
 ## Server
 
 ```cpp
@@ -203,7 +209,6 @@ Not started. Each item should sit on `coro` + the event loop the way handlers al
 |-----------------------|---------------------------------------------------------------------------------------|
 | **WebSocket**         | ---                                                                                   |
 | **Redis**             | RESP client on `coro::native_reactor`. Extractor or `State<>` for a shared pool.      |
-| **Postgres**          | Async query client, same I/O model as Redis.                                          |
 | **Static files**      | Route that sendfiles a directory. Range requests later.                               |
 | **TLS**               | HTTPS as a `Server::Builder` switch; h2o already links OpenSSL.                       |
 | **Graceful shutdown** | Stop listeners, drain in-flight handlers, then join workers.                          |
