@@ -68,80 +68,8 @@ target_sources(coro INTERFACE
         include/coro/sync/async_mutex.h
 )
 
-# --- Tree / manifest / umbrella consistency -------------------------------
-#
-# The umbrella rotted once before and shipped with ctest fully green (see
-# tests/test_umbrella.cpp). Discipline was the thing that failed, so the
-# guard is a build failure instead. Three lists must agree exactly:
-#
-#   1. the headers actually on disk
-#   2. the FILE_SET manifest above, which decides what installs
-#   3. the #includes in coro.h, which decide what a consumer gets
-#
-# detail/ headers are in 1 and 2 but deliberately not in 3.
-
-file(GLOB_RECURSE _coro_on_disk
-        RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/coro/*.h")
-list(SORT _coro_on_disk)
-
-get_target_property(_coro_manifest_raw coro HEADER_SET)
-set(_coro_manifest "")
-foreach (_f IN LISTS _coro_manifest_raw)
-    cmake_path(ABSOLUTE_PATH _f
-            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE
-            OUTPUT_VARIABLE _abs)
-    cmake_path(RELATIVE_PATH _abs
-            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include"
-            OUTPUT_VARIABLE _rel)
-    list(APPEND _coro_manifest "${_rel}")
-endforeach ()
-list(SORT _coro_manifest)
-
-if (NOT _coro_on_disk STREQUAL _coro_manifest)
-    set(_missing ${_coro_on_disk})
-    if (_coro_manifest)
-        list(REMOVE_ITEM _missing ${_coro_manifest})
-    endif ()
-    set(_stale ${_coro_manifest})
-    if (_coro_on_disk)
-        list(REMOVE_ITEM _stale ${_coro_on_disk})
-    endif ()
-    message(FATAL_ERROR
-            "coro: FILE_SET does not match the header tree.\n"
-            "  on disk but not in FILE_SET (would not install): ${_missing}\n"
-            "  in FILE_SET but not on disk: ${_stale}")
-endif ()
-
-set(_coro_public ${_coro_on_disk})
-list(REMOVE_ITEM _coro_public "coro/coro.h")
-list(FILTER _coro_public EXCLUDE REGEX "/detail/")
-list(SORT _coro_public)
-
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/coro/coro.h" _umbrella_lines
-        REGEX "^#include \"coro/")
-set(_coro_umbrella "")
-foreach (_line IN LISTS _umbrella_lines)
-    string(REGEX REPLACE "^#include \"([^\"]+)\".*$" "\\1" _inc "${_line}")
-    list(APPEND _coro_umbrella "${_inc}")
-endforeach ()
-list(SORT _coro_umbrella)
-
-if (NOT _coro_public STREQUAL _coro_umbrella)
-    set(_unumbrellaed ${_coro_public})
-    if (_coro_umbrella)
-        list(REMOVE_ITEM _unumbrellaed ${_coro_umbrella})
-    endif ()
-    set(_phantom ${_coro_umbrella})
-    if (_coro_public)
-        list(REMOVE_ITEM _phantom ${_coro_public})
-    endif ()
-    message(FATAL_ERROR
-            "coro: coro.h does not match the public header tree.\n"
-            "  public but not in the umbrella: ${_unumbrellaed}\n"
-            "  in the umbrella but not public (or a detail/ header): ${_phantom}")
-endif ()
+# Tree / manifest / umbrella consistency: see cmake/owl_header_guard.cmake.
+owl_header_guard(coro coro _coro_public)
 
 # static_thread_pool runs std::thread workers; carrying the linkage burden
 # here spares every consumer from remembering it.

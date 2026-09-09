@@ -8,6 +8,14 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 include(GNUInstallDirs)
 include(CTest)
+include(cmake/owl_header_guard.cmake)
+
+if (PROJECT_IS_TOP_LEVEL)
+    # A coroutine that falls off its end without co_return finishes with no
+    # result, and clang only warns; here that is an error, for this
+    # project's own tests and benches, never for a consumer.
+    add_compile_options($<$<COMPILE_LANG_AND_ID:CXX,Clang,AppleClang,GNU>:-Werror=return-type>)
+endif ()
 
 option(OWL_ENABLE_PROMETHEUS "Build owl::prometheus (HTTP RED + scrape handler)" OFF)
 option(OWL_ENABLE_SQLITE "Build owl::sql sqlite driver" OFF)

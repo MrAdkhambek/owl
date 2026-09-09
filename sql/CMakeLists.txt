@@ -32,6 +32,7 @@ target_sources(sql INTERFACE
         include/sql/sqlite.h
         include/sql/psql.h
         include/sql/detail/placeholders.h
+        include/sql/detail/rows.h
         include/sql/detail/stmt_key.h
 )
 
@@ -62,70 +63,8 @@ if (OWL_ENABLE_SQLITE)
     target_compile_definitions(sql INTERFACE OWL_ENABLE_SQLITE)
 endif ()
 
-# --- Tree / manifest / umbrella consistency (coro's guard, verbatim) ------
-
-file(GLOB_RECURSE _sql_on_disk
-        RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}/include"
-        CONFIGURE_DEPENDS
-        "${CMAKE_CURRENT_SOURCE_DIR}/include/sql/*.h")
-list(SORT _sql_on_disk)
-
-get_target_property(_sql_manifest_raw sql HEADER_SET)
-set(_sql_manifest "")
-foreach (_f IN LISTS _sql_manifest_raw)
-    cmake_path(ABSOLUTE_PATH _f
-            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE
-            OUTPUT_VARIABLE _abs)
-    cmake_path(RELATIVE_PATH _abs
-            BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include"
-            OUTPUT_VARIABLE _rel)
-    list(APPEND _sql_manifest "${_rel}")
-endforeach ()
-list(SORT _sql_manifest)
-
-if (NOT _sql_on_disk STREQUAL _sql_manifest)
-    set(_missing ${_sql_on_disk})
-    if (_sql_manifest)
-        list(REMOVE_ITEM _missing ${_sql_manifest})
-    endif ()
-    set(_stale ${_sql_manifest})
-    if (_sql_on_disk)
-        list(REMOVE_ITEM _stale ${_sql_on_disk})
-    endif ()
-    message(FATAL_ERROR
-            "sql: FILE_SET does not match the header tree.\n"
-            "  on disk but not in FILE_SET (would not install): ${_missing}\n"
-            "  in FILE_SET but not on disk: ${_stale}")
-endif ()
-
-set(_sql_public ${_sql_on_disk})
-list(REMOVE_ITEM _sql_public "sql/sql.h")
-list(FILTER _sql_public EXCLUDE REGEX "/detail/")
-list(SORT _sql_public)
-
-file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/sql/sql.h" _sql_umbrella_lines
-        REGEX "^#include \"sql/")
-set(_sql_umbrella "")
-foreach (_line IN LISTS _sql_umbrella_lines)
-    string(REGEX REPLACE "^#include \"([^\"]+)\".*$" "\\1" _inc "${_line}")
-    list(APPEND _sql_umbrella "${_inc}")
-endforeach ()
-list(SORT _sql_umbrella)
-
-if (NOT _sql_public STREQUAL _sql_umbrella)
-    set(_unumbrellaed ${_sql_public})
-    if (_sql_umbrella)
-        list(REMOVE_ITEM _unumbrellaed ${_sql_umbrella})
-    endif ()
-    set(_phantom ${_sql_umbrella})
-    if (_sql_public)
-        list(REMOVE_ITEM _phantom ${_sql_public})
-    endif ()
-    message(FATAL_ERROR
-            "sql: sql.h does not match the public header tree.\n"
-            "  public but not in the umbrella: ${_unumbrellaed}\n"
-            "  in the umbrella but not public (or a detail/ header): ${_phantom}")
-endif ()
+# Tree / manifest / umbrella consistency: see cmake/owl_header_guard.cmake.
+owl_header_guard(sql sql _sql_public)
 
 if (BUILD_TESTING)
     # One TU per public header, each including only that header, so a
