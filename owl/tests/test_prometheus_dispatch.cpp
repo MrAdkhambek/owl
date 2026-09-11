@@ -52,7 +52,7 @@ namespace {
             req.res.content_length = SIZE_MAX;
             capture.super.do_send = &Capture::on_send;
             req._ostr_top = &capture.super;
-            request = owl::Request::from(&req);
+            request = owl::Request::make(&req);
         }
 
         ~Fixture() {
@@ -88,7 +88,7 @@ struct DispatchClear : testing::Test {
 TEST_F(DispatchClear, RecordsMatchedRequest) {
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(ping));
     Fixture fixture;
-    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    auto* const job = owl::detail::Job<App>::make(&fixture.req.pool);
     const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
@@ -105,7 +105,7 @@ TEST_F(DispatchClear, RecordsKickedRequest) {
                       .layer(kick)
                       .route<"/ping">(owl::get(ping));
     Fixture fixture;
-    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    auto* const job = owl::detail::Job<App>::make(&fixture.req.pool);
     const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
@@ -119,7 +119,7 @@ TEST_F(DispatchClear, RecordsKickedRequest) {
 TEST_F(DispatchClear, RecordsThrownHandlerAs500) {
     auto router = owl::Router<App>::make().route<"/boom">(owl::get(boom));
     Fixture fixture;
-    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    auto* const job = owl::detail::Job<App>::make(&fixture.req.pool);
     const auto* const handler = router.match(owl::Method::Get, "/boom", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};

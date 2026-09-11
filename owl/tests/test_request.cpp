@@ -17,7 +17,7 @@ namespace {
         req.method = {.base = const_cast<char*>(method), .len = std::char_traits<char>::length(method)};
         req.path = {.base = path, .len = path_len};
         req.query_at = query_at;
-        return owl::Request::from(&req);
+        return owl::Request::make(&req);
     }
 }
 
@@ -28,7 +28,7 @@ TEST(Request, FromParsesMethod) {
     req.method = {const_cast<char*>(token), sizeof(token) - 1};
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(r->method(), owl::Method::Post);
         EXPECT_EQ(r->raw(), &req);
     }
@@ -42,7 +42,7 @@ TEST(Request, FromUnknownMethod) {
     req.method = {const_cast<char*>(token), sizeof(token) - 1};
     req.query_at = SIZE_MAX;
     {
-        EXPECT_EQ(owl::Request::from(&req)->method(), owl::Method::Unknown);
+        EXPECT_EQ(owl::Request::make(&req)->method(), owl::Method::Unknown);
     }
     h2o_mem_clear_pool(&req.pool);
 }
@@ -118,7 +118,7 @@ TEST(Request, HeaderRepeatedLookupsReturnSameValue) {
     h2o_add_header_by_str(&req.pool, &req.headers, "host", 4, 1, nullptr, "ex.com", 6);
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(r->header("host"), "ex.com");
         EXPECT_EQ(r->header("host"), "ex.com");
         EXPECT_EQ(r->header("missing"), std::nullopt);
@@ -146,7 +146,7 @@ TEST(Request, HeaderNameMatchesNonAsciiBytes) {
     h2o_add_header_by_str(&req.pool, &req.headers, name, sizeof(name) - 1, 1, nullptr, "v", 1);
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(r->header(std::string_view{name, sizeof(name) - 1}), "v");
         EXPECT_EQ(r->header("X-CAF\xc3\xa9"), "v");
         EXPECT_EQ(r->header("x-caf\xc3\xa8"), std::nullopt);
@@ -159,7 +159,7 @@ TEST(Request, HeaderMissingNameOnEmptyHeaderList) {
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(r->header("host"), std::nullopt);
         EXPECT_EQ(r->header("Host"), std::nullopt);
     }
@@ -171,7 +171,7 @@ TEST(Request, StopTokenIsLiveWhileRequestExists) {
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
     {
-        const auto* const r = owl::Request::from(&req);
+        const auto* const r = owl::Request::make(&req);
         const auto token = r->stop_source().get_token();
         EXPECT_TRUE(token.stop_possible());
         EXPECT_FALSE(token.stop_requested());
@@ -185,7 +185,7 @@ TEST(Request, DisposingRequestCancelsItsStopToken) {
     req.query_at = SIZE_MAX;
     std::stop_token token;
     {
-        const auto* const r = owl::Request::from(&req);
+        const auto* const r = owl::Request::make(&req);
         token = r->stop_source().get_token();
         EXPECT_FALSE(token.stop_requested());
     }
@@ -200,7 +200,7 @@ TEST(Request, AllTokensShareTheRequestCancellation) {
     std::stop_token first;
     std::stop_token second;
     {
-        const auto* const r = owl::Request::from(&req);
+        const auto* const r = owl::Request::make(&req);
         first = r->stop_source().get_token();
         second = r->stop_source().get_token();
     }
@@ -215,7 +215,7 @@ TEST(Request, HeaderFindsNonTokenNameCaseInsensitively) {
     h2o_add_header_by_str(&req.pool, &req.headers, "x-custom", 8, 1, nullptr, "v", 1);
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(r->header("x-custom"), "v");
         EXPECT_EQ(r->header("X-Custom"), "v");
         EXPECT_EQ(r->header("X-CUSTOM"), "v");
@@ -234,7 +234,7 @@ TEST(Request, FormatsAsMethodAndPath) {
     req.path_normalized = {.base = path, .len = sizeof(path) - 1};
     req.query_at = SIZE_MAX;
     {
-        const auto r = owl::Request::from(&req);
+        const auto r = owl::Request::make(&req);
         EXPECT_EQ(std::format("{}", *r), "GET /users/42");
         EXPECT_EQ(std::format("{:>20}", *r), "       GET /users/42");
     }

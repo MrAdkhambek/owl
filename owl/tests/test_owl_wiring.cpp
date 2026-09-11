@@ -132,7 +132,7 @@ TEST(OwlWiring, SqliteQueryCompletesOnTheWorkerLoop) {
     const auto& context = fx.context();
     ASSERT_NE(context.sqlite, nullptr);
 
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto db = owl::fromContextRef<sql::pool<sql::sqlite>>(context, *request);
     ASSERT_TRUE(db.has_value());
     EXPECT_EQ(*db, context.sqlite.get());
@@ -151,7 +151,7 @@ TEST(OwlWiring, SqliteQueryCompletesOnTheWorkerLoop) {
 
 TEST(OwlWiring, UnwiredSqlitePoolKicks500) {
     Fixture fx{false, nullptr};
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto db = owl::fromContextRef<sql::pool<sql::sqlite>>(fx.context(), *request);
     EXPECT_FALSE(db.has_value());
     EXPECT_EQ(db.error().status(), 500);
@@ -161,7 +161,7 @@ TEST(OwlWiring, UnwiredSqlitePoolKicks500) {
 #ifdef OWL_ENABLE_POSTGRESQL
 TEST(OwlWiring, UnwiredPsqlPoolKicks500) {
     Fixture fx{false, nullptr};
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto pg = owl::fromContextRef<sql::pool<sql::psql>>(fx.context(), *request);
     EXPECT_FALSE(pg.has_value());
     EXPECT_EQ(pg.error().status(), 500);
@@ -174,7 +174,7 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
     const auto& context = fx.context();
     ASSERT_NE(context.psql, nullptr);
 
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto pg = owl::fromContextRef<sql::pool<sql::psql>>(context, *request);
     ASSERT_TRUE(pg.has_value());
 
@@ -191,7 +191,7 @@ TEST(OwlWiring, PsqlQueryCompletesOnTheWorkerLoop) {
 #ifdef OWL_ENABLE_REDIS
 TEST(OwlWiring, UnwiredRedisClientKicks500) {
     Fixture fx{false, nullptr, false};
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto rd = owl::fromContextRef<redis::client>(fx.context(), *request);
     EXPECT_FALSE(rd.has_value());
     EXPECT_EQ(rd.error().status(), 500);
@@ -203,7 +203,7 @@ TEST(OwlWiring, RedisCommandCompletesOnTheWorkerLoop) {
     const auto& context = fx.context();
     ASSERT_NE(context.redis, nullptr);
 
-    const auto* const request = owl::Request::from(&fx.req);
+    const auto* const request = owl::Request::make(&fx.req);
     const auto rd = owl::fromContextRef<redis::client>(context, *request);
     ASSERT_TRUE(rd.has_value());
     EXPECT_EQ(*rd, context.redis.get());

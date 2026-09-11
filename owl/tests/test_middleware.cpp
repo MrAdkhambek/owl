@@ -40,7 +40,7 @@ namespace {
             req.res.content_length = SIZE_MAX;
             capture.super.do_send = &Capture::on_send;
             req._ostr_top = &capture.super;
-            request = owl::Request::from(&req);
+            request = owl::Request::make(&req);
         }
 
         ~Fixture() {

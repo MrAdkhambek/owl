@@ -240,7 +240,7 @@ namespace owl::detail {
             // The exchange never produced a handler response -- Request
             // construction, match, or launch failed -- so it is counted under
             // the unmatched route rather than a real one. The raw h2o method
-            // token is used because Request::from may itself be what threw.
+            // token is used because Request::make may itself be what threw.
             Exchange::unmatched(std::string_view{req->method.base, req->method.len}, "unmatched", 500);
             send_error_floor(req, 500);
         }

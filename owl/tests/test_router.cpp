@@ -42,7 +42,7 @@ TEST(Router, MatchesLiteralGet) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     const auto* handler = router.match(owl::Method::Get, "/ping", *request);
     ASSERT_NE(handler, nullptr);
     h2o_mem_clear_pool(&req.pool);
@@ -54,7 +54,7 @@ TEST(Router, MatchSetsRoutePattern) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     ASSERT_NE(router.match(owl::Method::Get, "/ping", *request), nullptr);
     EXPECT_EQ(request->route_pattern(), "/ping");
     h2o_mem_clear_pool(&req.pool);
@@ -66,7 +66,7 @@ TEST(Router, UnknownPathIsNull) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     EXPECT_EQ(router.match(owl::Method::Get, "/nope", *request), nullptr);
     h2o_mem_clear_pool(&req.pool);
 }
@@ -77,7 +77,7 @@ TEST(Router, CapturesPathParam) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     ASSERT_NE(router.match(owl::Method::Get, "/users/42", *request), nullptr);
     EXPECT_EQ(request->param("id"), "42");
     EXPECT_EQ(request->route_pattern(), "/users/{id}");
@@ -90,7 +90,7 @@ TEST(Router, RoutesStateHandler) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     EXPECT_NE(router.match(owl::Method::Get, "/n", *request), nullptr);
     h2o_mem_clear_pool(&req.pool);
 }
@@ -103,7 +103,7 @@ TEST(Router, NestPrefix) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     EXPECT_NE(router.match(owl::Method::Get, "/api/v1/ping", *request), nullptr);
     EXPECT_EQ(router.match(owl::Method::Get, "/ping", *request), nullptr);
     h2o_mem_clear_pool(&req.pool);
@@ -117,7 +117,7 @@ TEST(Router, NestedMatchSetsFullRoutePattern) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     ASSERT_NE(router.match(owl::Method::Get, "/api/v1/ping", *request), nullptr);
     EXPECT_EQ(request->route_pattern(), "/api/v1/ping");
     h2o_mem_clear_pool(&req.pool);
@@ -131,7 +131,7 @@ TEST(Router, NestStateHandler) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     EXPECT_NE(router.match(owl::Method::Get, "/api/n", *request), nullptr);
     h2o_mem_clear_pool(&req.pool);
 }
@@ -143,7 +143,7 @@ TEST(Router, LayerCollectsChain) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
-    auto* request = owl::Request::from(&req);
+    auto* request = owl::Request::make(&req);
     owl::detail::MatchedChains<App> chains{};
     ASSERT_NE(router.match(owl::Method::Get, "/ping", *request, &chains), nullptr);
     EXPECT_EQ(chains.count, 1u);
