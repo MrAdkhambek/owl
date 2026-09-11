@@ -1,5 +1,5 @@
 // Dispatch-level RED recording, compiled only when OWL_ENABLE_PROMETHEUS is
-// ON: launch_handler must record matched, kicked, and thrown exchanges, with
+// ON: a launched Job must record matched, kicked, and thrown exchanges, with
 // the route pattern (not the request path) as the label.
 
 #include <gtest/gtest.h>
@@ -88,11 +88,11 @@ struct DispatchClear : testing::Test {
 TEST_F(DispatchClear, RecordsMatchedRequest) {
     auto router = owl::Router<App>::make().route<"/ping">(owl::get(ping));
     Fixture fixture;
-    owl::detail::MatchedChains<App> chains{};
-    const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &chains);
+    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
-    owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
+    job->launch(handler, fixture.request, nullptr, &ctx);
     EXPECT_EQ(fixture.req.res.status, 200);
 
     const std::string body = owl::prometheus::dump();
@@ -105,11 +105,11 @@ TEST_F(DispatchClear, RecordsKickedRequest) {
                       .layer(kick)
                       .route<"/ping">(owl::get(ping));
     Fixture fixture;
-    owl::detail::MatchedChains<App> chains{};
-    const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &chains);
+    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    const auto* const handler = router.match(owl::Method::Get, "/ping", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
-    owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
+    job->launch(handler, fixture.request, nullptr, &ctx);
     EXPECT_EQ(fixture.req.res.status, 401);
 
     const std::string body = owl::prometheus::dump();
@@ -119,11 +119,11 @@ TEST_F(DispatchClear, RecordsKickedRequest) {
 TEST_F(DispatchClear, RecordsThrownHandlerAs500) {
     auto router = owl::Router<App>::make().route<"/boom">(owl::get(boom));
     Fixture fixture;
-    owl::detail::MatchedChains<App> chains{};
-    const auto* const handler = router.match(owl::Method::Get, "/boom", *fixture.request, &chains);
+    auto* const job = owl::detail::Job<App>::in(&fixture.req.pool);
+    const auto* const handler = router.match(owl::Method::Get, "/boom", *fixture.request, &job->chains);
     ASSERT_NE(handler, nullptr);
     const owl::Context<App> ctx{std::make_shared<App>(), fixture.ctx.loop};
-    owl::detail::launch_handler(handler, fixture.request, &fixture.req, std::move(chains), static_cast<const owl::MiddlewareChain<App>*>(nullptr), &ctx);
+    job->launch(handler, fixture.request, nullptr, &ctx);
 
     const std::string body = owl::prometheus::dump();
     EXPECT_NE(body.find("http_requests_total{method=\"GET\",status=\"500\",route=\"/boom\"} 1"), std::string::npos);

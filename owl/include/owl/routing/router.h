@@ -193,9 +193,7 @@ namespace owl {
         ) const {
             if (out != nullptr) {
                 out->count = 0;
-                if (!root_.middleware.empty()) {
-                    out->push(&root_.middleware);
-                }
+                out->push(&root_.middleware);
             }
 
             std::array<std::string_view, max_path_segments> segments{};

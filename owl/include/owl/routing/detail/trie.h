@@ -73,18 +73,12 @@ namespace owl::detail {
         }
     };
 
-    // A view of the chains to run, outermost first. Points into the
-    // MatchedChains the driver holds, which outlives the chain.
-    template <typename S>
-    struct ChainSpan {
-        const MiddlewareChain<S>* const * data;
-        std::size_t count;
-    };
-
     // The middleware a request collects while matching: pointers to the
     // chains of every group root on the matched path, outermost first.
     // The chains themselves live in the trie, so the pointers outlive any
     // request handed them; the array lives in whoever asked for the match.
+    // An empty chain is no chain: push and splice both drop one, so no
+    // caller has to ask first.
     //
     // Slot 0 is left empty for the server-wide chain, which belongs to the
     // Server rather than the trie and is spliced in at dispatch. Reserving
@@ -102,11 +96,12 @@ namespace owl::detail {
         std::size_t count = 0; // entries live at [1, 1 + count)
 
         void push(const MiddlewareChain<S>* chain) noexcept {
+            if (chain->empty()) return;
             chains[1 + count++] = chain;
         }
 
         [[nodiscard]] ChainSpan<S> splice(const MiddlewareChain<S>* front) noexcept {
-            if (front == nullptr) return {.data = chains.data() + 1, .count = count};
+            if (front == nullptr || front->empty()) return {.data = chains.data() + 1, .count = count};
             chains[0] = front;
             return {.data = chains.data(), .count = count + 1};
         }
@@ -136,9 +131,7 @@ namespace owl::detail {
         if (const RouteNode<S>* child = node.find_literal(segments[index])) {
             const std::size_t mark = captured;
             const std::size_t chain_mark = chains != nullptr ? chains->count : 0;
-            if (chains != nullptr && !child->middleware.empty()) {
-                chains->push(&child->middleware);
-            }
+            if (chains != nullptr) chains->push(&child->middleware);
             if (const Handler<S>* handler = descend(*child, segments, count, index + 1, method, captures, captured, chains, route)) {
                 return handler;
             }
@@ -149,9 +142,7 @@ namespace owl::detail {
         if (node.param) {
             const std::size_t mark = captured;
             const std::size_t chain_mark = chains != nullptr ? chains->count : 0;
-            if (chains != nullptr && !node.param->middleware.empty()) {
-                chains->push(&node.param->middleware);
-            }
+            if (chains != nullptr) chains->push(&node.param->middleware);
             if (captured < max_path_params) {
                 captures[captured++] = {.name = std::string_view{node.param->param_name}, .value = segments[index]};
             }

@@ -27,32 +27,23 @@ namespace owl {
     template <typename S>
     using Handler = std::function<coro::task<Response>(const Request&, const Context<S>&)>;
 
-    template <typename S>
-    class Terminal final {
-    public:
-        explicit Terminal(const Handler<S>* handler) noexcept : handler_(handler) {
-        }
-
-        [[nodiscard]] coro::task<Response> operator()(const Request& req, const Context<S>& ctx) const {
-            return (*handler_)(req, ctx);
-        }
-
-    private:
-        const Handler<S>* handler_ = nullptr;
-    };
+    namespace detail {
+        // The chains a request runs through, outermost first: a view into
+        // whoever collected them, which outlives any Next walking it.
+        template <typename S>
+        struct ChainSpan {
+            const MiddlewareChain<S>* const * data;
+            std::size_t count;
+        };
+    }
 
     template <typename S>
     class Next final {
     public:
-        Next(
-            const MiddlewareChain<S>* const* chains,
-            const std::size_t chain_count,
-            Terminal<S>* terminal,
-            const Context<S>* ctx
-        ) noexcept
-            : chains_(chains),
-              chain_count_(chain_count),
-              terminal_(terminal),
+        Next(const detail::ChainSpan<S> chains, const Handler<S>* handler, const Context<S>* ctx) noexcept
+            : chains_(chains.data),
+              chain_count_(chains.count),
+              handler_(handler),
               ctx_(ctx) {
         }
 
@@ -63,9 +54,9 @@ namespace owl {
                 ++chain;
                 item = 0;
             }
-            if (chain >= chain_count_) return (*terminal_)(req, *ctx_);
+            if (chain >= chain_count_) return (*handler_)(req, *ctx_);
             const Middleware<S>& current = (*chains_[chain])[item];
-            return current(req, *ctx_, Next{chains_, chain_count_, chain, item + 1, terminal_, ctx_});
+            return current(req, *ctx_, Next{chains_, chain_count_, chain, item + 1, handler_, ctx_});
         }
 
     private:
@@ -74,14 +65,14 @@ namespace owl {
             const std::size_t chain_count,
             const std::size_t chain_index,
             const std::size_t item_index,
-            Terminal<S>* terminal,
+            const Handler<S>* handler,
             const Context<S>* ctx
         ) noexcept
             : chains_(chains),
               chain_count_(chain_count),
               chain_index_(chain_index),
               item_index_(item_index),
-              terminal_(terminal),
+              handler_(handler),
               ctx_(ctx) {
         }
 
@@ -89,7 +80,7 @@ namespace owl {
         std::size_t chain_count_;
         std::size_t chain_index_ = 0;
         std::size_t item_index_ = 0;
-        Terminal<S>* terminal_;
+        const Handler<S>* handler_;
         const Context<S>* ctx_;
     };
 }

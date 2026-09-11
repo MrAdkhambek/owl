@@ -2,21 +2,19 @@
 
 #include <memory>
 #include <netinet/in.h>
+#include <new>
 #include <sys/socket.h>
 
 #include <h2o.h>
 
 #include "coro/task.h"
 #include "owl/coro/loop_scheduler.h"
+#include "owl/core/drivers.h"
+#include "owl/core/metrics.h"
 #include "owl/http/detail/finish.h"
 #include "owl/http/request.h"
-#include "owl/core/drivers.h"
 #include "owl/routing/router.h"
 
-#ifdef OWL_ENABLE_PROMETHEUS
-#include <chrono>
-#include <prometheus/http.h>
-#endif
 #if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE) || defined(OWL_ENABLE_REDIS)
 #include <optional>
 #endif
@@ -64,56 +62,61 @@ namespace owl::detail {
         DriverConfigs drivers;
     };
 
-    struct SendJob {
-        coro::task<> work;
-
-        static void dispose(void* const memory) {
-            std::destroy_at(static_cast<SendJob*>(memory));
-        }
-    };
-
+    // Runs the request through its chains and the handler, then sends what
+    // came back. The exchange's clock starts before the try, so a handler
+    // that throws is still charged the time it spent unwinding; a throw
+    // from anywhere in the run is answered with the 500 floor.
     template <typename S>
-    static void launch_handler(
+    static coro::task<> run_handler(
         const Handler<S>* const handler,
         Request* const request,
-        h2o_req_t* const req,
-        MatchedChains<S> chains,
+        MatchedChains<S>* const chains,
         const MiddlewareChain<S>* const server_layers,
         const Context<S>* const context
     ) {
-        auto* const job = std::construct_at(static_cast<SendJob*>(h2o_mem_alloc_shared(&req->pool, sizeof(SendJob), &SendJob::dispose)));
-        job->work = [](
-            const Handler<S>* const h,
-            Request* const r,
-            MatchedChains<S> ch,
-            const MiddlewareChain<S>* const front,
-            const Context<S>* const ctx
-        ) -> coro::task<> {
-                // The clock starts before try: a handler that throws must
-                // still be recorded with the time it spent unwinding.
-#ifdef OWL_ENABLE_PROMETHEUS
-                const auto start = std::chrono::steady_clock::now();
-#endif
-                try {
-                    Terminal<S> term{h};
-                    const auto span = ch.splice(front);
-                    const Next<S> next{span.data, span.count, &term, ctx};
-                    auto response = co_await next(*r);
-#ifdef OWL_ENABLE_PROMETHEUS
-                    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-                    owl::prometheus::record_request(to_string(r->method()), r->route_pattern(), response.status(), elapsed);
-#endif
-                    co_await std::move(response).send(r->raw());
-                } catch (...) {
-#ifdef OWL_ENABLE_PROMETHEUS
-                    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-                    owl::prometheus::record_request(to_string(r->method()), r->route_pattern(), 500, elapsed);
-#endif
-                    send_error_floor(r->raw(), 500);
-                }
-            }(handler, request, std::move(chains), server_layers, context);
-        job->work.start();
+        const Exchange exchange{};
+        try {
+            const Next<S> next{chains->splice(server_layers), handler, context};
+            auto response = co_await next(*request);
+            exchange.matched(*request, response.status());
+            co_await std::move(response).send(request->raw());
+        } catch (...) {
+            exchange.matched(*request, 500);
+            send_error_floor(request->raw(), 500);
+        }
     }
+
+    // One request's dispatch, in the request's pool so that both die
+    // together however far the handler got: the chains the match collects,
+    // which Next views in place, and the task that runs them. The chains
+    // live here rather than in the coroutine frame so they are neither
+    // zeroed nor copied on the way in (see MatchedChains).
+    template <typename S>
+    struct Job final {
+        MatchedChains<S> chains;
+        coro::task<> work;
+
+        [[nodiscard]] static Job* in(h2o_mem_pool_t* const pool) {
+            void* const memory = h2o_mem_alloc_shared(pool, sizeof(Job), [](void* const object) {
+                std::destroy_at(static_cast<Job*>(object));
+            });
+            // Default-initialised, not value-initialised: braces here would
+            // be the memset MatchedChains exists to avoid.
+            return ::new(memory) Job;
+        }
+
+        void launch(
+            const Handler<S>* const handler,
+            Request* const request,
+            const MiddlewareChain<S>* const server_layers,
+            const Context<S>* const context
+        ) {
+            // The frame must outlive this call: a handler that parks on I/O
+            // is resumed later, and the pool's dispose is what frees it.
+            work = run_handler(handler, request, &chains, server_layers, context);
+            work.start();
+        }
+    };
 
     static void on_accept(h2o_socket_t* const listener, const char* const err) {
         if (err != nullptr) return;
@@ -176,37 +179,29 @@ namespace owl::detail {
 
         try {
             auto* const request = Request::from(req);
-
-            MatchedChains<S> chains{};
+            auto* const job = Job<S>::in(&req->pool);
             const auto* const handler = dispatcher->router->match(
                 request->method(),
                 request->path(),
                 *request,
-                &chains
+                &job->chains
             );
 
             if (handler == nullptr) {
                 const auto allowed = dispatcher->router->allowed_methods(request->path());
-#ifdef OWL_ENABLE_PROMETHEUS
                 const auto status = allowed.empty() ? 404 : 405;
-                owl::prometheus::record_unmatched(to_string(request->method()), request->route_pattern(), status);
-#endif
+                Exchange::unmatched(to_string(request->method()), request->route_pattern(), status);
                 allowed.empty() ? send_not_found(req) : send_not_allowed(req, allowed.to_allow_header());
                 return 0;
             }
 
-            const MiddlewareChain<S>* const front = dispatcher->server_layers != nullptr && !dispatcher->server_layers->empty()
-                                                        ? dispatcher->server_layers
-                                                        : nullptr;
-            launch_handler(handler, request, req, std::move(chains), front, context);
+            job->launch(handler, request, dispatcher->server_layers, context);
         } catch (...) {
-#ifdef OWL_ENABLE_PROMETHEUS
             // The exchange never produced a handler response -- Request
             // construction, match, or launch failed -- so it is counted under
             // the unmatched route rather than a real one. The raw h2o method
             // token is used because Request::from may itself be what threw.
-            owl::prometheus::record_unmatched(std::string_view{req->method.base, req->method.len}, "unmatched", 500);
-#endif
+            Exchange::unmatched(std::string_view{req->method.base, req->method.len}, "unmatched", 500);
             send_error_floor(req, 500);
         }
         return 0;

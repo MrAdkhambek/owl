@@ -117,9 +117,7 @@ namespace {
         owl::detail::MatchedChains<S> chains{};
         const auto* const handler = router.match(owl::Method::Get, path, *fixture.request, &chains);
         EXPECT_NE(handler, nullptr);
-        owl::Terminal<S> term{handler};
-        const auto span = chains.splice(server);
-        const owl::Next<S> next{span.data, span.count, &term, &ctx};
+        const owl::Next<S> next{chains.splice(server), handler, &ctx};
         return coro::sync_wait(next(*fixture.request));
     }
 }
