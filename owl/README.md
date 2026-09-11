@@ -36,7 +36,7 @@ auto router = owl::Router<App>::make()
               .route<"/hello/{name}">(owl::get(hello));
 ```
 
-Link `owl::owl`. Pulls `libh2o-evloop`, `owl::coro`, `owl::fstr`, nlohmann_json, OpenSSL, and zlib.
+Link `owl::owl`. Pulls `libh2o-evloop`, libwslay, `owl::coro`, `owl::fstr`, nlohmann_json, OpenSSL, and zlib.
 
 ## Handlers
 
@@ -157,6 +157,18 @@ auto router = owl::Router<AppState>::make()
 
 `Server::Builder::layer` is the outermost chain (MatchedChains slot 0). Nested `Router::layer` runs only under that prefix.
 
+## WebSocket
+
+A path takes a send/recv coroutine or a shared controller. Extractors run before the upgrade — the request is gone at 101 — so they must own their values. `const T&` is allowed only for driver and loop refs, which outlive the connection on their worker. `owl::get` and `.ws` may share a pattern; a GET without Upgrade on a WS-only path is 404. One controller instance is built at registration and reached from every worker, so it must be safe for concurrent use, the same contract `State<T>` carries. `send` is awaitable so it can gain backpressure later; it does not have it yet.
+
+```cpp
+owl::Router<App>::make()
+    .route<"/chat">(owl::get(page))
+    .ws<"/chat", Chat>(app)
+    .ws<"/rooms/{id}">(room)
+    .ws<"/echo/{user}", Echo>(echo);
+```
+
 ## Prometheus
 
 See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_PROMETHEUS=ON`: `owl::owl` then depends on `owl::prometheus` (which itself pulls nothing), and the server records HTTP RED itself — every exchange through dispatch under its route pattern, thrown handlers as `500`, and unmatched requests (`404`/`405`, dispatch failures) counted without a duration. Your handler only serves `owl::prometheus::dump()` as `text/plain; version=0.0.4; charset=utf-8`.
@@ -200,6 +212,7 @@ Each box below is one turn of that worker's `h2o_evloop_run`:
 | `extract/` | parsing, extractor types, and the `FromContext` dispatch                                    |
 | `routing/` | the route trie, `Router`, middleware                                                        |
 | `coro/`    | `loop_scheduler`, which hops work back onto the request's event loop                        |
+| `ws/`      | `Message`, `Socket`, controller sugar; handshake and engine in `detail/`                    |
 | `server.h` | h2o workers, listeners, and the dispatch entry point                                        |
 
 `owl.h` includes all of it.
@@ -210,7 +223,7 @@ Not started. Each item should sit on `coro` + the event loop the way handlers al
 
 |                       | Sketch                                                                                |
 |-----------------------|---------------------------------------------------------------------------------------|
-| **WebSocket**         | ---                                                                                   |
+| **WebSocket**         | Coroutine `.ws<Pattern>(fn)`, or a shared controller `.ws<Pattern, C>(args)` / `.ws<Pattern, C>(ptr)`. Owning extractors; `const T&` only for driver/loop refs. GET+WS on one path. Thread-safe shared instance. No backpressure yet. |
 | **Redis**             | RESP client on `coro::native_reactor`. Extractor or `State<>` for a shared pool.      |
 | **Static files**      | Route that sendfiles a directory. Range requests later.                               |
 | **TLS**               | HTTPS as a `Server::Builder` switch; h2o already links OpenSSL.                       |

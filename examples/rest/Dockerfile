@@ -18,7 +18,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git pkg-config ninja-build \
         gcc-14 g++-14 \
-        libssl-dev zlib1g-dev libuv1-dev libpq-dev libhiredis-dev \
+        libssl-dev zlib1g-dev libuv1-dev libpq-dev libhiredis-dev libwslay-dev \
     && rm -rf /var/lib/apt/lists/*
 
 ARG CMAKE_VERSION=4.3.0
@@ -38,13 +38,23 @@ RUN git clone --depth 1 --branch "${H2O_REF}" --recurse-submodules --shallow-sub
 
 WORKDIR /src
 COPY . /src
+# Ubuntu's libwslay-dev ships a cmake config, not libwslay.pc. owl looks it
+# up through pkg-config under Homebrew's name.
 # No C++ modules here: scanning for them would need clang-scan-deps.
-RUN cmake -S examples/rest -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
+RUN mkdir -p /usr/share/pkgconfig \
+    && printf '%s\n' \
+        'Name: libwslay' \
+        'Description: WebSocket library' \
+        'Version: 1.1.1' \
+        'Libs: -lwslay' \
+        'Cflags:' \
+        > /usr/share/pkgconfig/libwslay.pc \
+    && cmake -S examples/rest -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     && cmake --build /build --target rest
 
 FROM ubuntu:24.04 AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libssl3t64 zlib1g libpq5 libhiredis1.1.0 \
+        libssl3t64 zlib1g libpq5 libhiredis1.1.0 libwslay1 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /build/rest /usr/local/bin/rest
 # The compose file sets these; the defaults make a bare `docker run` work

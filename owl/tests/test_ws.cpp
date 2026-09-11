@@ -296,6 +296,18 @@ namespace {
         return owl::Response::ok("html");
     }
 
+    struct SharedEcho final {
+        std::atomic<int> connections{0};
+
+        void on_connect(owl::ws::Socket) {
+            connections.fetch_add(1);
+        }
+
+        coro::task<void> on_message(owl::ws::Socket sock, owl::ws::Message msg) {
+            co_await sock.send(std::string{msg.data()}, msg.opcode());
+        }
+    };
+
     coro::task<owl::Response> tag_layer(const owl::Request& req, owl::Next<App> next) {
         auto res = co_await next(req);
         res.header("x-layer", "1");
@@ -402,4 +414,25 @@ TEST(Ws, BadKeyIs400) {
     Client client{worker.port};
     const auto hs = client.handshake("/echo", "short");
     EXPECT_EQ(hs.status, 400);
+}
+
+TEST(Ws, SharedControllerEchoesAcrossTwoConnections) {
+    const auto echo = std::make_shared<SharedEcho>();
+    auto router = owl::Router<App>::make().ws<"/echo", SharedEcho>(echo);
+    LiveWorker worker{router};
+    for (int i = 0; i < 2; ++i) {
+        Client client{worker.port};
+        const auto hs = client.handshake("/echo");
+        EXPECT_EQ(hs.status, 101);
+        if (hs.status != 101) return;
+        client.send_frame(0x1, "hi");
+        std::uint8_t opcode = 0;
+        std::string payload;
+        EXPECT_TRUE(client.read_frame(opcode, payload));
+        EXPECT_EQ(opcode, 0x1);
+        EXPECT_EQ(payload, "hi");
+        client.send_close();
+        client.read_close_and_eof();
+    }
+    EXPECT_EQ(echo->connections.load(), 2);
 }

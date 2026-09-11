@@ -22,3 +22,6 @@
 #include "owl/server.h"
 #include "owl/util/pool_map.h"
 #include "owl/util/util.h"
+#include "owl/ws/controller.h"
+#include "owl/ws/message.h"
+#include "owl/ws/socket.h"

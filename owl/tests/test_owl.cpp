@@ -1,4 +1,4 @@
-#include <owl/server.h>
+#include <owl/owl.h>
 
 namespace {
     struct App final {
