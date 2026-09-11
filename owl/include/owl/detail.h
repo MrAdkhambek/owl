@@ -14,6 +14,7 @@
 #include "owl/http/detail/finish.h"
 #include "owl/http/request.h"
 #include "owl/routing/router.h"
+#include "owl/ws/detail/engine.h"
 
 #if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE) || defined(OWL_ENABLE_REDIS)
 #include <optional>
@@ -118,6 +119,20 @@ namespace owl::detail {
         try {
             const Next<S> next{chains->splice(server_layers), handler, context};
             auto response = co_await next(*request);
+            if (response.is_upgrade()) {
+                auto session = std::make_unique<ws::detail::Session>();
+                const auto upgrade = std::move(response).stage_upgrade(request->raw());
+                ws::detail::adopt(session.get(), upgrade->make(session.get()));
+                // upgrade() owns the session either way: it deletes it on false.
+                const bool upgraded = ws::detail::upgrade(request->raw(), session.release());
+                exchange.matched(*request, upgraded ? 101 : 400);
+                if (!upgraded) send_error_floor(request->raw(), 400);
+                // Upgraded: the request is h2o's now. The 101's write completes on a
+                // later loop pass -- evloop defers write callbacks through its pending
+                // list -- so this frame returns before the pool, and the Job holding
+                // this frame, is disposed.
+                co_return;
+            }
             exchange.matched(*request, response.status());
             co_await std::move(response).send(request->raw());
         } catch (...) {

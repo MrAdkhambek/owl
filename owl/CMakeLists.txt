@@ -44,6 +44,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/controller.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/handshake.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/session.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/engine.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/upgrade.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/views.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/routes.h"
@@ -62,6 +63,7 @@ find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(H2O REQUIRED IMPORTED_TARGET libh2o-evloop)
+pkg_check_modules(WSLAY REQUIRED IMPORTED_TARGET libwslay)
 
 include(FetchContent)
 FetchContent_Declare(
@@ -93,6 +95,7 @@ endif ()
 
 target_link_libraries(owl INTERFACE
         PkgConfig::H2O
+        PkgConfig::WSLAY
         coro
         fstr
         nlohmann_json::nlohmann_json
@@ -143,6 +146,7 @@ if (BUILD_TESTING)
     owl_add_test(test_builder)
     owl_add_test(test_ws_message)
     owl_add_test(test_ws_router)
+    owl_add_test(test_ws)
 
     if (OWL_ENABLE_PROMETHEUS)
         owl_add_test(test_prometheus_dispatch)
