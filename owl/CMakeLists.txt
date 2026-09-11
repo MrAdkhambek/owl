@@ -40,6 +40,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/pool_map.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/util.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/message.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/upgrade.h"
 )
 
 if (APPLE AND NOT OPENSSL_ROOT_DIR)

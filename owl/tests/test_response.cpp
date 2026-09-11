@@ -1,6 +1,7 @@
 #include <chrono>
 #include <cstddef>
 #include <gtest/gtest.h>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -118,6 +119,10 @@ namespace {
     owl::StreamBody no_chunks() {
         co_return;
     }
+
+    struct DummyUpgrade final : owl::detail::WsUpgrade {
+        coro::task<void> make(owl::ws::detail::Session*) override { co_return; }
+    };
 }
 
 TEST(Response, SetsStatusAndReason) {
@@ -607,4 +612,20 @@ TEST(Response, UnsentResponseDoesNotAllocateFromPool) {
     }
     EXPECT_EQ(fixture.req.pool.chunks, nullptr);
     EXPECT_EQ(fixture.req.pool.directs, nullptr);
+}
+
+TEST(Response, WebsocketIs101AndUpgrade) {
+    const auto r = owl::Response::websocket(std::make_shared<DummyUpgrade>());
+    EXPECT_EQ(r.status(), 101);
+    EXPECT_TRUE(r.is_upgrade());
+}
+
+TEST(Response, StageUpgradeCarriesMiddlewareHeaders) {
+    h2o_req_t req{};
+    h2o_mem_init_pool(&req.pool);
+    const auto dummy = std::make_shared<DummyUpgrade>();
+    const auto staged = owl::Response::websocket(dummy).header("x-layer", "1").stage_upgrade(&req);
+    EXPECT_EQ(staged.get(), dummy.get());
+    EXPECT_NE(h2o_find_header_by_str(&req.res.headers, H2O_STRLIT("x-layer"), -1), -1);
+    h2o_mem_clear_pool(&req.pool);
 }

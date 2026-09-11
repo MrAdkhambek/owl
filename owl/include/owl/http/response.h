@@ -23,10 +23,11 @@
 #include "cookie.h"
 #include "detail/finish.h"
 #include "policy.h"
+#include "owl/ws/detail/upgrade.h"
 
 namespace owl {
     using StreamBody = coro::async_generator<std::string>;
-    using Body = std::variant<std::monostate, std::string, StreamBody>;
+    using Body = std::variant<std::monostate, std::string, StreamBody, detail::WsUpgradePtr>;
 
     class Response final {
     public:
@@ -94,6 +95,24 @@ namespace owl {
             return status_;
         }
 
+        [[nodiscard]] bool is_upgrade() const noexcept {
+            return std::holds_alternative<detail::WsUpgradePtr>(body_);
+        }
+
+        // Status 101 is for middleware to read; nothing sends it. The driver
+        // stages the headers and the engine writes the handshake.
+        [[nodiscard]] static Response websocket(detail::WsUpgradePtr upgrade) {
+            return Response{101, std::move(upgrade)};
+        }
+
+        // The driver's half of an upgrade. Headers and cookies middleware added
+        // go into req->res, where h2o_http1_upgrade flattens them into the 101;
+        // dropping them would silently lose a session cookie set on the way out.
+        [[nodiscard]] detail::WsUpgradePtr stage_upgrade(this Response self, h2o_req_t* req) {
+            self.flush_headers(req);
+            return std::get<detail::WsUpgradePtr>(std::move(self.body_));
+        }
+
         template <typename Self>
         auto&& header(this Self&& self, const std::string_view name, const std::string_view value) {
             self.add_header(name, value);
@@ -107,6 +126,11 @@ namespace owl {
         }
 
         coro::task<> send(this Response self, h2o_req_t* req) {
+            if (self.is_upgrade()) {
+                co_await Response::error(500).send(req);
+                co_return;
+            }
+
             detail::write_status(req, self.status_);
             self.flush_headers(req);
 
