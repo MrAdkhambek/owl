@@ -1,7 +1,13 @@
 #include <gtest/gtest.h>
 
+#include <arpa/inet.h>
 #include <chrono>
+#include <cstdint>
+#include <netinet/in.h>
 #include <optional>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #include <stop_token>
 #include <string>
 #include <tuple>
@@ -32,6 +38,46 @@ namespace {
         return ">3\r\n$7\r\nmessage\r\n$" + std::to_string(channel.size()) + "\r\n" + channel + "\r\n$"
             + std::to_string(payload.size()) + "\r\n" + payload + "\r\n";
     }
+
+    // A loopback port that takes connections into its backlog and never
+    // accepts or answers them: a client's connect completes and its HELLO
+    // goes unanswered, so an open parks in the handshake. It can also say
+    // whether anyone connected at all, which a scripted server cannot.
+    class silent_listener final {
+    public:
+        silent_listener() : fd_(::socket(AF_INET, SOCK_STREAM, 0)) {
+            EXPECT_GE(fd_, 0);
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = 0;
+            EXPECT_EQ(::bind(fd_, reinterpret_cast<const sockaddr*>(&addr), sizeof addr), 0);
+            EXPECT_EQ(::listen(fd_, 8), 0);
+            socklen_t len = sizeof addr;
+            ::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len);
+            port_ = ntohs(addr.sin_port);
+        }
+
+        ~silent_listener() {
+            if (fd_ >= 0) ::close(fd_);
+        }
+
+        silent_listener(const silent_listener&) = delete;
+        silent_listener& operator=(const silent_listener&) = delete;
+
+        [[nodiscard]] std::uint16_t port() const noexcept {
+            return port_;
+        }
+
+        [[nodiscard]] bool anyone_connected() const {
+            pollfd p{.fd = fd_, .events = POLLIN, .revents = 0};
+            return ::poll(&p, 1, 0) > 0;
+        }
+
+    private:
+        int fd_ = -1;
+        std::uint16_t port_ = 0;
+    };
 }
 
 TEST(Pubsub, YieldsMessagesSkipsConfirmationsAndClosesOnDestruction) {
@@ -152,10 +198,12 @@ TEST(Pubsub, AStopBetweenPullsIsNotLost) {
     srv.join();
 }
 
-TEST(Pubsub, StopRequestedBeforeTheFirstPullEndsWithoutSubscribing) {
-    fake_server srv{{script{expect{hello}, send_bytes{hello_ok}, expect_eof{}}}};
+// A stop that is already in has nothing to wait for: the first pull ends at
+// once, and no connection is opened for a subscription nobody will read.
+TEST(Pubsub, StopRequestedBeforeTheFirstPullNeverConnects) {
+    const silent_listener server;
     fixture fx;
-    redis::client c{{.port = srv.port()}, fx.io};
+    redis::client c{{.port = server.port(), .connect_timeout = 300ms}, fx.io};
     std::stop_source stop;
     stop.request_stop();
     coro::sync_wait([&]() -> coro::task<> {
@@ -163,5 +211,30 @@ TEST(Pubsub, StopRequestedBeforeTheFirstPullEndsWithoutSubscribing) {
         const auto m = co_await gen.next();
         EXPECT_FALSE(m.has_value());
     }());
-    srv.join();
+    EXPECT_FALSE(server.anyone_connected());
+}
+
+// The server takes the connection and never answers HELLO, so the pull is
+// parked inside the open when the stop arrives. It has to end there, with
+// nullopt, rather than wait out connect_timeout and then throw.
+TEST(Pubsub, RequestStopEndsAPullStillOpeningTheConnection) {
+    const silent_listener server;
+    fixture fx;
+    redis::client c{{.port = server.port(), .connect_timeout = 3000ms}, fx.io};
+    std::stop_source stop;
+    const auto started = std::chrono::steady_clock::now();
+    coro::sync_wait([&]() -> coro::task<> {
+        co_await fx.hop();
+        auto gen = redis::subscribe(c, {"news"}, stop.get_token());
+        auto puller = [&]() -> coro::task<> {
+            const auto m = co_await gen.next();
+            EXPECT_FALSE(m.has_value());
+        };
+        auto stopper = [&]() -> coro::task<> {
+            (void)co_await fx.reactor.sleep(100ms);
+            stop.request_stop();
+        };
+        (void)co_await coro::when_all(puller(), stopper());
+    }());
+    EXPECT_LT(std::chrono::steady_clock::now() - started, 1s) << "the stop waited out connect_timeout";
 }

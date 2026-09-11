@@ -35,6 +35,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -58,7 +59,7 @@ namespace redis {
     class connection final {
     public:
         static coro::task<std::expected<std::unique_ptr<connection>, error>>
-        open(const config& cfg, const coro::reactor_ref io) {
+        open(const config& cfg, const coro::reactor_ref io, std::stop_token stop = {}) {
             redisOptions opts{};
             REDIS_OPTIONS_SET_TCP(&opts, cfg.host.c_str(), cfg.port);
             opts.options |= REDIS_OPT_NONBLOCK | REDIS_OPT_PREFER_IPV4;
@@ -66,11 +67,18 @@ namespace redis {
             if (raw == nullptr) co_return std::unexpected(error{error_kind::connect, "redisConnectWithOptions: out of memory"});
             auto c = std::unique_ptr<connection>(new connection{raw, io});
             if (raw->err != 0) co_return std::unexpected(error{error_kind::connect, raw->errstr});
+            // A stop asked for while the connect or the handshake is parked
+            // ends that wait the way it ends any other on this connection.
+            const std::stop_callback wake{stop, [conn = c.get()] {
+                conn->cancel_wait();
+            }};
 
             const coro::deadline deadline{cfg.connect_timeout};
             // The non-blocking connect is in flight: writable means it ended,
             // one way or the other, and SO_ERROR says which.
+            if (auto stopped = c->cancelled()) co_return std::unexpected(std::move(*stopped));
             const auto st = co_await io.wait(c->fd_, coro::interest::write, deadline.remaining());
+            if (auto stopped = c->cancelled()) co_return std::unexpected(std::move(*stopped));
             if (st == coro::wait_status::timeout) co_return std::unexpected(error{error_kind::timeout, "connect timed out"});
             if (st != coro::wait_status::ready) co_return std::unexpected(error{error_kind::connect, "reactor failed while connecting"});
             int so_error = 0;

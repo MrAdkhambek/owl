@@ -18,9 +18,11 @@
 // cancelled status, the body sees the stop request and returns instead of
 // throwing, and the pending next() completes with nullopt. Nothing is
 // closed to achieve it, which is what makes the connection's fate the
-// generator's own business. The callback is declared after the connection
-// so it dies first, and its destructor waits for a callback running on
-// another thread.
+// generator's own business. The stop reaches a pull that is still opening
+// the connection too, since it is handed to the open; and one requested
+// before the first pull opens nothing at all. The callback is declared
+// after the connection so it dies first, and its destructor waits for a
+// callback running on another thread.
 //
 // Where the stop may be requested from is the reactor's rule, not this
 // one's: native_reactor takes a cancel from any thread, owl's loop_reactor
@@ -52,11 +54,19 @@ namespace redis {
 
     [[nodiscard]] inline coro::async_generator<message>
     subscribe(const client& c, std::vector<std::string> channels, std::stop_token stop = {}) {
+        // A stop that is already in has nothing to wait for, and a
+        // connection opened for it would be a round trip for a subscription
+        // nobody reads.
+        if (stop.stop_requested()) co_return;
+
         // The client opens it, so a subscriber connection is made the same
         // way a command connection is; the generator holds nothing of the
         // client afterwards and may outlive the expression that named it.
-        auto opened = co_await c.open_connection();
-        if (!opened) throw std::move(opened.error());
+        auto opened = co_await c.open_connection(stop);
+        if (!opened) {
+            if (stop.stop_requested()) co_return;
+            throw std::move(opened.error());
+        }
         const std::unique_ptr<connection> conn = std::move(*opened);
         if (stop.stop_requested()) co_return;
 

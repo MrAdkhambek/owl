@@ -41,6 +41,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -121,9 +122,11 @@ namespace redis {
         // subscribe() needs its own. Opening lives here rather than at the
         // call site so that anything a connection to this server needs --
         // credentials, database, timeouts, and whatever is added later --
-        // is applied in one place for both kinds.
-        [[nodiscard]] coro::task<std::expected<std::unique_ptr<connection>, error>> open_connection() const {
-            return connection::open(cfg_, io_);
+        // is applied in one place for both kinds. A stop, when given, ends a
+        // connect or a handshake that is still in progress.
+        [[nodiscard]] coro::task<std::expected<std::unique_ptr<connection>, error>>
+        open_connection(std::stop_token stop = {}) const {
+            return connection::open(cfg_, io_, std::move(stop));
         }
 
         // The command API, as members: a client is the one thing a command
