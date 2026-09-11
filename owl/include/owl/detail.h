@@ -31,10 +31,50 @@
 #endif
 
 namespace owl::detail {
-    struct Worker {
+    // The h2o global config, disposed with it. Disposing it is what runs
+    // the Dispatcher's on_dispose and so lets go of the app state.
+    struct GlobalConf final {
+        h2o_globalconf_t conf{};
+
+        GlobalConf() {
+            h2o_config_init(&conf);
+        }
+
+        ~GlobalConf() {
+            h2o_config_dispose(&conf);
+        }
+
+        GlobalConf(const GlobalConf&) = delete;
+        GlobalConf& operator=(const GlobalConf&) = delete;
+    };
+
+    // One worker: its context, the loop that context runs on, and the
+    // listener once one is opened. It is torn down in the reverse of how it
+    // was built, and it has to die before the config its context points at.
+    struct Worker final {
         h2o_context_t ctx{};
         h2o_accept_ctx_t accept_ctx{};
         h2o_socket_t* listener = nullptr;
+
+        explicit Worker(h2o_globalconf_t* const conf) {
+            h2o_context_init(&ctx, h2o_evloop_create(), conf);
+            accept_ctx.ctx = &ctx;
+            accept_ctx.hosts = conf->hosts;
+        }
+
+        ~Worker() {
+            h2o_loop_t* const loop = ctx.loop;
+            if (listener != nullptr) {
+                h2o_socket_close(listener);
+                // A closed evloop socket is freed on the loop's next pass.
+                h2o_evloop_run(loop, 0);
+            }
+            h2o_context_dispose(&ctx);
+            h2o_evloop_destroy(loop);
+        }
+
+        Worker(const Worker&) = delete;
+        Worker& operator=(const Worker&) = delete;
     };
 
     // The driver configs the builder collected, as one value that travels

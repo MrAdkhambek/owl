@@ -120,6 +120,15 @@ namespace owl {
             detail::DriverConfigs drivers_{};
         };
 
+        // Pinned in place: every worker's context points into globalconf_,
+        // and the Dispatcher inside it points at layers_, so a moved Server
+        // would leave them aimed at the old object. build_with returns a
+        // prvalue, which guaranteed elision constructs where it lands.
+        Server(const Server&) = delete;
+        Server& operator=(const Server&) = delete;
+        Server(Server&&) = delete;
+        Server& operator=(Server&&) = delete;
+
         [[nodiscard]] static Builder builder() {
             return Builder{};
         }
@@ -160,7 +169,6 @@ namespace owl {
             // ever accepts, so it becomes 1.
             ////////////////////////////////////////////////////////////////////////////////////////////////
             std::signal(SIGPIPE, SIG_IGN);
-            h2o_config_init(&globalconf_);
             const unsigned count = config_->threads == 0 ? 1 : config_->threads;
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -168,7 +176,7 @@ namespace owl {
             // so every authority -- missing Host headers included -- resolves to it, and "/" matches
             // every path. Host and path dispatch are out of the way; routing belongs to the Router.
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            h2o_hostconf_t* const hostconf = h2o_config_register_host(&globalconf_, h2o_iovec_init(H2O_STRLIT("default")), 65535);
+            h2o_hostconf_t* const hostconf = h2o_config_register_host(&globalconf_.conf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             h2o_pathconf_t* const pathconf = h2o_config_register_path(hostconf, "/", 0);
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
@@ -185,18 +193,13 @@ namespace owl {
             ////////////////////////////////////////////////////////////////////////////////////////////////
             workers_.reserve(count);
             for (unsigned i = 0; i < count; ++i) {
-                auto worker = std::make_unique<detail::Worker>();
-                h2o_context_init(&worker->ctx, h2o_evloop_create(), &globalconf_);
-                worker->accept_ctx.ctx = &worker->ctx;
-                worker->accept_ctx.hosts = globalconf_.hosts;
-                workers_.push_back(std::move(worker));
+                workers_.push_back(std::make_unique<detail::Worker>(&globalconf_.conf));
             }
             open_listeners();
         }
 
         static void serve(detail::Worker& worker) {
             for (;;) h2o_evloop_run(worker.ctx.loop, INT32_MAX);
-            h2o_context_dispose(&worker.ctx);
         }
 
         void open_listeners() {
@@ -246,7 +249,9 @@ namespace owl {
         std::unique_ptr<Config> config_;
         MiddlewareChain<S> layers_{};
         std::shared_ptr<S> state_;
-        h2o_globalconf_t globalconf_{};
+        // Declared before workers_ so the workers, whose contexts point into
+        // it, are torn down first and the config last.
+        detail::GlobalConf globalconf_;
         std::vector<std::unique_ptr<detail::Worker>> workers_;
         std::uint16_t bound_port_ = 0;
     };
