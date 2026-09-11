@@ -40,6 +40,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/pool_map.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/util.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/message.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/handshake.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/upgrade.h"
 )
 
@@ -136,6 +137,7 @@ if (BUILD_TESTING)
     owl_add_test(test_loop_reactor)
     owl_add_test(test_builder)
     owl_add_test(test_ws_message)
+    owl_add_test(test_ws_router)
 
     if (OWL_ENABLE_PROMETHEUS)
         owl_add_test(test_prometheus_dispatch)
