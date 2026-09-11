@@ -39,6 +39,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/routing/router.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/pool_map.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/util.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/message.h"
 )
 
 if (APPLE AND NOT OPENSSL_ROOT_DIR)
@@ -133,6 +134,7 @@ if (BUILD_TESTING)
     owl_add_test(test_loop_scheduler)
     owl_add_test(test_loop_reactor)
     owl_add_test(test_builder)
+    owl_add_test(test_ws_message)
 
     if (OWL_ENABLE_PROMETHEUS)
         owl_add_test(test_prometheus_dispatch)
