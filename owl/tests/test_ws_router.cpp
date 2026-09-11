@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
@@ -38,6 +39,12 @@ namespace {
     coro::task<void> chat(owl::ws::Socket) { co_return; }
     coro::task<void> looped(owl::ws::Socket, const owl::loop_scheduler&) { co_return; }
     owl::Response page() { return owl::Response::ok("html"); }
+
+    struct Echo final {
+        explicit Echo(int n) : n(n) {}
+        void on_message(owl::ws::Socket, owl::ws::Message) {}
+        int n;
+    };
 }
 
 TEST(WsHandshake, DetectsUpgradeVersion13AndKey) {
@@ -179,5 +186,30 @@ TEST(WsRouter, NestedWsCollides) {
     EXPECT_THROW(
         (void)owl::Router<App>::make().ws<"/x/y">(chat)
             .nest<"/x">(owl::Router<App>::make().ws<"/y">(chat)),
+        std::invalid_argument);
+}
+
+TEST(WsRouter, ControllerFromCtorArgs) {
+    auto router = owl::Router<App>::make().ws<"/echo", Echo>(3);
+    h2o_req_t req{};
+    h2o_mem_init_pool(&req.pool);
+    req.query_at = SIZE_MAX;
+    set_handshake(req);
+    {
+        auto* request = owl::Request::make(&req);
+        ASSERT_NE(router.match(owl::Method::Get, "/echo", *request), nullptr);
+    }
+    h2o_mem_clear_pool(&req.pool);
+}
+
+TEST(WsRouter, ControllerFromSharedPtr) {
+    const auto echo = std::make_shared<Echo>(1);
+    auto router = owl::Router<App>::make().ws<"/echo", Echo>(echo);
+    EXPECT_EQ(router.size(), 1u);
+}
+
+TEST(WsRouter, NullControllerThrows) {
+    EXPECT_THROW(
+        ((void)owl::Router<App>::make().ws<"/echo", Echo>(std::shared_ptr<Echo>{})),
         std::invalid_argument);
 }

@@ -1,11 +1,13 @@
 #pragma once
 
+#include <memory>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
 #include <coro/task.h>
 
+#include "owl/ws/controller.h"
 #include "owl/ws/detail/upgrade.h"
 #include "owl/ws/socket.h"
 
@@ -52,6 +54,35 @@ namespace owl::detail {
         [[nodiscard]] coro::task<void> make(ws::detail::Session* session) override {
             return std::apply([this, session](auto&... slot) {
                 return handler(ws::Socket{session}, from_ws_slot<Args>(slot)...);
+            }, slots);
+        }
+    };
+
+    // One connection's call into the controller: the *shared* instance,
+    // plus the extractors belonging to this connection alone.
+    //
+    // Both halves are here for a reason. The instance is a shared_ptr
+    // captured once at registration -- one controller serves every
+    // connection, and holding it by shared_ptr is what lets the caller
+    // keep a handle and reach it from outside the route. The extracted
+    // values cannot join it there: they differ per connection, so a
+    // controller that held them would overwrite one client's with the
+    // next's. Hence one of these per request, built where the extraction
+    // happens, exactly as WsRoute is. The instance outlives the connection
+    // because the registered handler's capture holds it for the router's
+    // lifetime.
+    template <typename C, typename... Args>
+    struct WsController final : WsUpgrade {
+        std::shared_ptr<C> instance;
+        std::tuple<WsSlot<Args>...> slots;
+
+        WsController(std::shared_ptr<C> c, std::tuple<WsSlot<Args>...> extracted)
+            : instance(std::move(c)), slots(std::move(extracted)) {
+        }
+
+        [[nodiscard]] coro::task<void> make(ws::detail::Session* session) override {
+            return std::apply([this, session](auto&... slot) {
+                return ws::detail::controller_loop<C>(ws::Socket{session}, *instance, from_ws_slot<Args>(slot)...);
             }, slots);
         }
     };

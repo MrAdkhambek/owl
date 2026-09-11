@@ -41,6 +41,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/util/util.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/message.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/socket.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/controller.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/handshake.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/session.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/ws/detail/upgrade.h"
@@ -170,4 +171,6 @@ if (BUILD_TESTING)
     owl_add_compile_fail_test(rejects_wrong_state_type)
     owl_add_compile_fail_test(rejects_nest_of_other_state)
     owl_add_compile_fail_test(rejects_mutable_loop_ref)
+    owl_add_compile_fail_test(rejects_ws_view_extractor)
+    owl_add_compile_fail_test(rejects_ws_missing_on_message)
 endif ()

@@ -25,6 +25,7 @@
 #include "owl/routing/detail/pattern.h"
 #include "owl/routing/detail/traits.h"
 #include "owl/routing/detail/trie.h"
+#include "owl/ws/controller.h"
 #include "owl/ws/detail/handshake.h"
 #include "owl/ws/detail/routes.h"
 #include "owl/ws/detail/views.h"
@@ -191,6 +192,51 @@ namespace owl {
             return std::move(*this);
         }
 
+        // Controller form. Adopts an instance the caller built -- and, if
+        // it keeps the shared_ptr, can still reach. That is the difference
+        // from the overload below: there the controller is only reachable
+        // from inside a connection.
+        //
+        // One instance serves every connection on the route. Extractors,
+        // if the controller declares any, are the part that is *not*
+        // shared: they are pulled per request below.
+        template <fstr::fstr Pattern, typename C>
+        [[nodiscard]] Router ws(std::shared_ptr<C> instance) && {
+            static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
+            static_assert(ws::detail::is_extractor_tuple_v<ws::detail::extractors_of_t<C>>,
+                          "a controller's Extractors must be a std::tuple<...> of extractors");
+
+            if (instance == nullptr) {
+                // Every connection on this route would dereference it.
+                throw std::invalid_argument("owl::Router: ws controller instance is null");
+            }
+
+            register_controller<Pattern, C>(std::move(instance), static_cast<ws::detail::extractors_of_t<C>*>(nullptr));
+            return std::move(*this);
+        }
+
+        // Constructor arguments, forwarded once. Excluded when the single
+        // argument is already a shared_ptr<C>, or this and the overload
+        // above would both match.
+        template <fstr::fstr Pattern, typename C, typename... CtorArgs>
+            requires (!(sizeof...(CtorArgs) == 1 && (std::is_same_v<std::remove_cvref_t<CtorArgs>, std::shared_ptr<C>> && ...)))
+        [[nodiscard]] Router ws(CtorArgs... args) && {
+            static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
+            static_assert(std::is_constructible_v<C, CtorArgs...>,
+                          "the controller cannot be constructed from these arguments");
+            static_assert(ws::detail::is_extractor_tuple_v<ws::detail::extractors_of_t<C>>,
+                          "a controller's Extractors must be a std::tuple<...> of extractors");
+
+            // Constructed here, once -- not built per request. Every
+            // connection on this route shares this one instance, which is
+            // what makes members shared state rather than per-connection
+            // state, and what requires the controller to be safe for
+            // concurrent use when threads > 1.
+            register_controller<Pattern, C>(std::make_shared<C>(std::move(args)...),
+                                            static_cast<ws::detail::extractors_of_t<C>*>(nullptr));
+            return std::move(*this);
+        }
+
         template <typename F>
         [[nodiscard]] Router layer(F middleware) && {
             root_.middleware.emplace_back(wrap_layer<S>(std::move(middleware)));
@@ -286,6 +332,65 @@ namespace owl {
             static_assert((!detail::is_view_extractor_v<std::remove_cvref_t<Args>> && ...),
                           "a WebSocket handler outlives its request: take Path/Query/Header with an owning T, "
                           "Json<T>, State<T>, or a const& to a driver -- not a view");
+        }
+
+        // What every controller must satisfy, whichever way it arrives.
+        //
+        // Args... is the pack from C::Extractors, empty when it declares
+        // none. Every method is allowed either spelling -- with the pack
+        // or without it -- so on_disconnect need not carry an auth header
+        // it has no use for. With an empty pack the two are the same
+        // check, which is why nothing changes for a controller that takes
+        // no extractors.
+        template <typename C, typename... Args>
+        static constexpr void ws_controller_checks() {
+            static_assert(ws::detail::HasOnMessage<C, Args...>
+                          || ws::detail::HasOnMessage<C>,
+                          "a WebSocket controller needs "
+                          "on_message(ws::Socket, ws::Message) returning void or task<void>, "
+                          "optionally followed by the controller's declared Extractors");
+            // A method that exists but does not match is a silently dead
+            // callback, which is worse than either a match or an absence.
+            static_assert(!ws::detail::NamesOnConnect<C>
+                          || ws::detail::HasOnConnect<C, Args...>
+                          || ws::detail::HasOnConnect<C>,
+                          "on_connect must be on_connect(ws::Socket), optionally followed by "
+                          "the controller's declared Extractors, returning void or task<void>");
+            static_assert(!ws::detail::NamesOnDisconnect<C>
+                          || ws::detail::HasOnDisconnect<C, Args...>
+                          || ws::detail::HasOnDisconnect<C>,
+                          "on_disconnect must be on_disconnect(ws::Socket), optionally followed "
+                          "by the controller's declared Extractors, returning void or "
+                          "task<void> -- it takes the Socket because one controller serves "
+                          "every connection and must be told which one ended");
+        }
+
+        // Registers a controller route with C::Extractors unpacked into a
+        // parameter pack. The tuple pointer is never dereferenced: it is
+        // there only so Args... can be *deduced* from a type alias, which
+        // an explicit template argument list cannot do on its own.
+        //
+        // From here on this is the coroutine form's registration with a
+        // controller in place of a function pointer -- the same
+        // extraction, the same checks, the same pre-upgrade rejection.
+        template <fstr::fstr Pattern, typename C, typename... Args>
+        void register_controller(std::shared_ptr<C> instance, std::tuple<Args...>*) {
+            // Order matters for the diagnostic, not the outcome: a pack
+            // that names an undeclared path parameter also fails to match
+            // on_message, and "your on_message is wrong" would be the wrong
+            // thing to be told about a mistake in the pattern.
+            check_args<Pattern, Args...>();
+            ws_checks<Args...>();
+            ws_controller_checks<C, Args...>();
+
+            if (!insert_ws(Pattern.view(), [instance = std::move(instance)](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
+                auto args = extract_all<Args...>(ctx, req);
+                if (!args) [[unlikely]] co_return to_response(std::move(args).error());
+                co_return Response::websocket(
+                    std::make_shared<detail::WsController<C, Args...>>(instance, detail::to_ws_slots(*std::move(args))));
+            })) {
+                throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
+            }
         }
 
         template <fstr::fstr Pattern, Method M, typename R, typename... Args>
