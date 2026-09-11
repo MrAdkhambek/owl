@@ -45,9 +45,13 @@ TEST(LoopScheduler, ScheduleAfterElapses) {
     owl::loop_scheduler io{ctx.loop};
 
     const auto start = std::chrono::steady_clock::now();
-    auto work = [&io]() -> coro::task<void> {
+    // A coroutine lambda keeps its captures in the closure, not the frame:
+    // the closure has to outlive every resumption, so it is named here
+    // rather than invoked as a temporary.
+    const auto body = [&io]() -> coro::task<void> {
         co_await io.schedule_after(20ms);
-    }();
+    };
+    auto work = body();
     pump(ctx.loop, work);
     EXPECT_GE(std::chrono::steady_clock::now() - start, 15ms);
     h2o_loop_t* const loop = ctx.loop;
@@ -70,13 +74,14 @@ TEST(LoopScheduler, ScheduleReturnsFromPoolThread) {
     std::thread::id loop_id;
     std::thread::id pool_id;
     std::thread::id back_id;
-    auto work = [&]() -> coro::task<void> {
+    const auto body = [&]() -> coro::task<void> {
         loop_id = std::this_thread::get_id();
         co_await pool.schedule();
         pool_id = std::this_thread::get_id();
         co_await io.schedule();
         back_id = std::this_thread::get_id();
-    }();
+    };
+    auto work = body();
     pump(ctx.loop, work);
     EXPECT_NE(pool_id, loop_id);
     EXPECT_EQ(back_id, loop_id);
@@ -102,13 +107,14 @@ TEST(LoopScheduler, PostReturnsFromPoolThread) {
     std::thread::id loop_id;
     std::thread::id pool_id;
     std::thread::id back_id;
-    auto work = [&]() -> coro::task<void> {
+    const auto body = [&]() -> coro::task<void> {
         loop_id = std::this_thread::get_id();
         co_await pool.schedule();
         pool_id = std::this_thread::get_id();
         co_await post_back{io};
         back_id = std::this_thread::get_id();
-    }();
+    };
+    auto work = body();
     pump(ctx.loop, work);
     EXPECT_NE(pool_id, loop_id);
     EXPECT_EQ(back_id, loop_id);
@@ -129,10 +135,11 @@ TEST(LoopScheduler, PostWithoutHopResumesOnLoop) {
     owl::loop_scheduler io{ctx.loop};
 
     bool resumed = false;
-    auto work = [&]() -> coro::task<void> {
+    const auto body = [&]() -> coro::task<void> {
         co_await post_back{io};
         resumed = true;
-    }();
+    };
+    auto work = body();
     pump(ctx.loop, work);
     EXPECT_TRUE(resumed);
 
