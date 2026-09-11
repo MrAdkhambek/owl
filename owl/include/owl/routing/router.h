@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstddef>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -24,6 +25,9 @@
 #include "owl/routing/detail/pattern.h"
 #include "owl/routing/detail/traits.h"
 #include "owl/routing/detail/trie.h"
+#include "owl/ws/detail/handshake.h"
+#include "owl/ws/detail/routes.h"
+#include "owl/ws/detail/views.h"
 #include "middleware.h"
 
 namespace owl {
@@ -170,6 +174,23 @@ namespace owl {
             return std::move(*this);
         }
 
+        // A coroutine on a parallel slot so GET and Upgrade can share a path.
+        template <fstr::fstr Pattern, typename... Args>
+        [[nodiscard]] Router ws(coro::task<void> (*handler)(ws::Socket, Args...)) && {
+            static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
+            check_args<Pattern, Args...>();
+            ws_checks<Args...>();
+            if (!insert_ws(Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
+                auto args = extract_all<Args...>(ctx, req);
+                if (!args) [[unlikely]] co_return to_response(std::move(args).error());
+                co_return Response::websocket(
+                    std::make_shared<detail::WsRoute<Args...>>(handler, detail::to_ws_slots(*std::move(args))));
+            })) {
+                throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
+            }
+            return std::move(*this);
+        }
+
         template <typename F>
         [[nodiscard]] Router layer(F middleware) && {
             root_.middleware.emplace_back(wrap_layer<S>(std::move(middleware)));
@@ -203,12 +224,14 @@ namespace owl {
             std::array<PathParam, max_path_params> captures{};
             std::size_t captured = 0;
             std::string_view route{};
+            const bool websocket = method == Method::Get && ws::detail::is_websocket_handshake(req);
             const Handler<S>* handler = detail::descend(
                 root_,
                 segments.data(),
                 count,
                 0,
                 method,
+                websocket,
                 captures.data(),
                 captured,
                 out,
@@ -243,10 +266,11 @@ namespace owl {
         Router() = default;
 
         bool insert(Method method, std::string_view pattern, Handler<S> handler);
+        bool insert_ws(std::string_view pattern, Handler<S> handler);
+        detail::RouteNode<S>* node_for(std::string_view pattern);
 
-        template <fstr::fstr Pattern, Method M, typename R, typename... Args>
-        void mount(const detail::Endpoint<M, R, Args...>& endpoint) {
-            static_assert(detail::is_handler_return_v<R>, "a handler must return Response or coro::task<Response>");
+        template <fstr::fstr Pattern, typename... Args>
+        static constexpr void check_args() {
             static_assert(
                 ((detail::path_param_of<std::remove_cvref_t<Args>>::value.empty()
                     || detail::declares<Pattern>(detail::path_param_of<std::remove_cvref_t<Args>>::value)) && ...),
@@ -255,6 +279,19 @@ namespace owl {
                 ((!detail::state_of<std::remove_cvref_t<Args>>::is_state
                     || std::is_same_v<typename detail::state_of<std::remove_cvref_t<Args>>::type, S>) && ...),
                 "handler asks for a State<T> that is not this router's state type");
+        }
+
+        template <typename... Args>
+        static constexpr void ws_checks() {
+            static_assert((!detail::is_view_extractor_v<std::remove_cvref_t<Args>> && ...),
+                          "a WebSocket handler outlives its request: take Path/Query/Header with an owning T, "
+                          "Json<T>, State<T>, or a const& to a driver -- not a view");
+        }
+
+        template <fstr::fstr Pattern, Method M, typename R, typename... Args>
+        void mount(const detail::Endpoint<M, R, Args...>& endpoint) {
+            static_assert(detail::is_handler_return_v<R>, "a handler must return Response or coro::task<Response>");
+            check_args<Pattern, Args...>();
 
             auto* const handler = endpoint.handler;
             add(M, Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
@@ -296,9 +333,9 @@ namespace owl {
     };
 
     template <typename S>
-    inline bool Router<S>::insert(const Method method, const std::string_view pattern, Handler<S> handler) {
+    inline detail::RouteNode<S>* Router<S>::node_for(const std::string_view pattern) {
         const detail::PatternInfo info = detail::parse_pattern(pattern);
-        if (!info.ok) return false;
+        if (!info.ok) return nullptr;
 
         detail::RouteNode<S>* node = &root_;
         for (std::size_t i = 0; i < info.count; ++i) {
@@ -310,16 +347,31 @@ namespace owl {
                 } else if (node->param->param_name != segment.text) {
                     // Two routes naming the same slot differently would make
                     // param() depend on which route won. Refuse instead.
-                    return false;
+                    return nullptr;
                 }
                 node = node->param.get();
             } else {
                 node = &node->literal_child(segment.text);
             }
         }
+        return node;
+    }
 
-        if (node->handler_for(method)) return false; // duplicate route
+    template <typename S>
+    inline bool Router<S>::insert(const Method method, const std::string_view pattern, Handler<S> handler) {
+        detail::RouteNode<S>* const node = node_for(pattern);
+        if (node == nullptr || node->handler_for(method)) return false;
         node->handlers.emplace_back(method, std::move(handler));
+        node->pattern = std::string(pattern);
+        ++size_;
+        return true;
+    }
+
+    template <typename S>
+    inline bool Router<S>::insert_ws(const std::string_view pattern, Handler<S> handler) {
+        detail::RouteNode<S>* const node = node_for(pattern);
+        if (node == nullptr || static_cast<bool>(node->websocket)) return false;
+        node->websocket = std::move(handler);
         node->pattern = std::string(pattern);
         ++size_;
         return true;

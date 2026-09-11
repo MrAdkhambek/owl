@@ -41,6 +41,10 @@ namespace owl::detail {
         std::vector<std::unique_ptr<RouteNode>> literals; // sorted by label
         std::unique_ptr<RouteNode> param;
         std::vector<std::pair<Method, Handler<S>>> handlers;
+        // Parallel to handlers so GET and an Upgrade handshake can share a
+        // path. Empty means none -- WS is not an HTTP method and does not
+        // live in handlers.
+        Handler<S> websocket;
         // Registered template for this node. graft() prefixes nested
         // tries so /api/v1 + /ping stays "/api/v1/ping", not "/ping".
         std::string pattern;
@@ -115,12 +119,17 @@ namespace owl::detail {
         const std::size_t count,
         const std::size_t index,
         const Method method,
+        const bool websocket,
         PathParam* captures,
         std::size_t& captured,
         MatchedChains<S>* chains,
         std::string_view* route
     ) {
         if (index == count) {
+            if (websocket && static_cast<bool>(node.websocket)) {
+                if (route != nullptr) *route = node.pattern;
+                return &node.websocket;
+            }
             if (const Handler<S>* handler = node.handler_for(method)) {
                 if (route != nullptr) *route = node.pattern;
                 return handler;
@@ -132,7 +141,7 @@ namespace owl::detail {
             const std::size_t mark = captured;
             const std::size_t chain_mark = chains != nullptr ? chains->count : 0;
             if (chains != nullptr) chains->push(&child->middleware);
-            if (const Handler<S>* handler = descend(*child, segments, count, index + 1, method, captures, captured, chains, route)) {
+            if (const Handler<S>* handler = descend(*child, segments, count, index + 1, method, websocket, captures, captured, chains, route)) {
                 return handler;
             }
             captured = mark;
@@ -146,7 +155,7 @@ namespace owl::detail {
             if (captured < max_path_params) {
                 captures[captured++] = {.name = std::string_view{node.param->param_name}, .value = segments[index]};
             }
-            if (const Handler<S>* handler = descend(*node.param, segments, count, index + 1, method,
+            if (const Handler<S>* handler = descend(*node.param, segments, count, index + 1, method, websocket,
                                                     captures, captured, chains, route)) {
                 return handler;
             }
@@ -214,6 +223,13 @@ namespace owl::detail {
                 throw std::invalid_argument("nested route collides with one already registered");
             }
             into.handlers.emplace_back(method, std::move(handler));
+        }
+
+        if (from.websocket) {
+            if (into.websocket) {
+                throw std::invalid_argument("nested websocket collides with one already registered");
+            }
+            into.websocket = std::move(from.websocket);
         }
 
         for (auto& child : from.literals) {
