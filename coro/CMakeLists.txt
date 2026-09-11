@@ -136,6 +136,7 @@ if (BUILD_TESTING)
     coro_add_test(sync/test_waiter_queue)
 
     coro_add_test(io/test_reactor)
+    coro_add_test(io/test_reactor_cancel_reuse)
     coro_add_test(io/test_reactor_ref)
     coro_add_test(io/test_deadline)
 endif ()

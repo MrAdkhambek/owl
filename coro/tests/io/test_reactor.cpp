@@ -9,30 +9,12 @@
 #include <coro/run/sync_wait.h>
 #include <coro/task.h>
 
+#include "support/pipe.h"
+
 using namespace std::chrono_literals;
 
 namespace {
-    // A pipe gives a readable fd on demand: nothing is readable until
-    // something is written, which is exactly the edge the reactor parks on.
-    class pipe_pair {
-    public:
-        pipe_pair() { EXPECT_EQ(::pipe(fds_), 0); }
-
-        ~pipe_pair() {
-            if (fds_[0] >= 0) ::close(fds_[0]);
-            if (fds_[1] >= 0) ::close(fds_[1]);
-        }
-
-        pipe_pair(const pipe_pair&) = delete;
-        pipe_pair& operator=(const pipe_pair&) = delete;
-
-        [[nodiscard]] int read_end() const noexcept { return fds_[0]; }
-
-        void write_byte() const { EXPECT_EQ(::write(fds_[1], "x", 1), 1); }
-
-    private:
-        int fds_[2]{-1, -1};
-    };
+    using coro_test::pipe_pair;
 
     // A connected AF_UNIX pair: full duplex, so one end can carry a read
     // wait and a write wait at the same time.

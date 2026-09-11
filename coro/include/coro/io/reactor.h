@@ -194,6 +194,11 @@ namespace coro {
                 {
                     const std::lock_guard lock(mutex);
                     if (inflight.erase(req) == 0) return;
+                    // A cancel still queued for this request is about
+                    // nothing now, and must not outlive it: once the
+                    // coroutine resumes, the request's memory can come
+                    // back as another request before the queue is applied.
+                    std::erase(cancels, req);
                 }
                 disarm(req);
                 req->status = status;
@@ -346,8 +351,10 @@ namespace coro {
                             // Already chosen by cancel(); the pointers are
                             // only compared and erased below, never
                             // dereferenced before complete() has won the
-                            // race for them, so one that finished in the
-                            // meantime is simply not found.
+                            // race for them. One whose wait finished before
+                            // this swap was dropped from the queue by
+                            // complete(), so its memory, if it has come back
+                            // as a new request, is not named here.
                             asked.swap(cancels);
                         }
                     }
