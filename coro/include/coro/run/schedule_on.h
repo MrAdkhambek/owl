@@ -20,7 +20,6 @@
 #include "coro/task.h"
 
 namespace coro {
-
     // Parks the caller on sched.schedule(), then runs t to completion
     // inline. t is moved into the wrapper's frame -- after that the
     // wrapper owns it and the caller must not await it again.

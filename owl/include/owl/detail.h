@@ -136,7 +136,7 @@ namespace owl::detail {
         MatchedChains<S> chains;
         coro::task<> work;
 
-        [[nodiscard]] static Job* in(h2o_mem_pool_t* const pool) {
+        [[nodiscard]] static Job* make(h2o_mem_pool_t* const pool) {
             void* const memory = h2o_mem_alloc_shared(pool, sizeof(Job), [](void* const object) {
                 std::destroy_at(static_cast<Job*>(object));
             });
@@ -218,8 +218,8 @@ namespace owl::detail {
         const auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(self);
 
         try {
-            auto* const request = Request::from(req);
-            auto* const job = Job<S>::in(&req->pool);
+            auto* const request = Request::make(req);
+            auto* const job = Job<S>::make(&req->pool);
             const auto* const handler = dispatcher->router->match(
                 request->method(),
                 request->path(),

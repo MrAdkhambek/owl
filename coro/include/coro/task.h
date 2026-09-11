@@ -108,7 +108,6 @@ namespace coro {
             void return_void() const noexcept {
             }
         };
-
     }
 
     // A coroutine that runs only when awaited, delivers its result to whoever

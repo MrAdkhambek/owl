@@ -18,7 +18,6 @@
 #include "coro/task.h"
 
 namespace coro {
-
     // Runs t to completion wherever it lands, then hops to sched before
     // handing the result back. t is moved into the wrapper's frame, and
     // the result is stored there across the hop.

@@ -49,7 +49,7 @@ namespace owl::detail {
         std::coroutine_handle<> parked{};
         bool client_gone{false};
 
-        [[nodiscard]] static stream_channel* from(h2o_req_t* req) {
+        [[nodiscard]] static stream_channel* make(h2o_req_t* req) {
             const auto channel = static_cast<stream_channel*>(
                 h2o_mem_alloc_pool_aligned(&req->pool, alignof(stream_channel), sizeof(stream_channel)));
             channel->super = {
@@ -106,7 +106,7 @@ namespace owl::detail {
     }
 
     inline coro::task<void> write_stream(h2o_req_t* const req, coro::async_generator<std::string> gen) {
-        auto* const channel = stream_channel::from(req);
+        auto* const channel = stream_channel::make(req);
         h2o_start_response(req, &channel->super);
         const await_proceed proceed{.channel = channel};
 

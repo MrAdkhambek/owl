@@ -74,23 +74,24 @@ namespace redis {
             c->cancel_wait();
         }};
 
-        const detail::command_args argv{"SUBSCRIBE", channels};
-        if (!conn->append(argv.argv())) throw error{error_kind::connection, "could not queue SUBSCRIBE"};
+        if (const detail::command_args argv{"SUBSCRIBE", channels}; !conn->append(argv.argv())) {
+            throw error{error_kind::connection, "could not queue SUBSCRIBE"};
+        }
+
         if (auto flushed = co_await conn->flush(std::chrono::milliseconds{-1}); !flushed) {
             if (stop.stop_requested()) co_return;
             throw std::move(flushed.error());
         }
 
-        for (;;) {
-            if (stop.stop_requested()) co_return;
-            auto r = co_await conn->read(std::chrono::milliseconds{-1});
-            if (!r) {
+        while (!stop.stop_requested()) {
+            auto result = co_await conn->read(std::chrono::milliseconds{-1});
+            if (!result) {
                 if (stop.stop_requested()) co_return;
-                throw std::move(r.error());
+                throw std::move(result.error());
             }
-            if (r->type() != reply_type::push || r->size() != 3) continue;
-            if ((*r)[0].as<std::string_view>() != "message") continue;
-            co_yield message{(*r)[1].as<std::string>(), (*r)[2].as<std::string>()};
+            if (result->type() != reply_type::push || result->size() != 3) continue;
+            if ((*result)[0].as<std::string_view>() != "message") continue;
+            co_yield message{.channel = (*result)[1].as<std::string>(), .payload = (*result)[2].as<std::string>()};
         }
     }
 }

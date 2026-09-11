@@ -32,7 +32,10 @@ namespace coro {
 
         template <io_reactor R>
         explicit reactor_ref(const R& reactor) noexcept
-            : ctx_(&reactor), wait_(&wait_thunk<R>), release_(&release_thunk<R>), cancel_(&cancel_thunk<R>) {
+            : ctx_(&reactor),
+              wait_(&wait_thunk<R>),
+              release_(&release_thunk<R>),
+              cancel_(&cancel_thunk<R>) {
         }
 
         [[nodiscard]] task<wait_status>

@@ -13,7 +13,6 @@
 #include <condition_variable>
 #include <coroutine>
 #include <cstddef>
-#include <cstdio>
 #include <deque>
 #include <memory>
 #include <mutex>

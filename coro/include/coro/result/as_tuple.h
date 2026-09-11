@@ -59,4 +59,3 @@ namespace coro {
         return as_tuple_t<Aw>{std::forward<Aw>(awaitable)};
     }
 }
-

@@ -197,9 +197,9 @@ namespace redis {
         handshake(const config& cfg, const coro::deadline deadline) {
             std::vector<std::string_view> hello{"HELLO", "3"};
             if (!cfg.password.empty()) {
-                hello.push_back("AUTH");
-                hello.push_back(cfg.username.empty() ? std::string_view{"default"} : std::string_view{cfg.username});
-                hello.push_back(cfg.password);
+                hello.emplace_back("AUTH");
+                hello.emplace_back(cfg.username.empty() ? std::string_view{"default"} : std::string_view{cfg.username});
+                hello.emplace_back(cfg.password);
             }
             if (auto r = co_await exchange(hello, deadline); !r) co_return std::unexpected(as_connect(std::move(r.error()), true));
             if (cfg.db != 0) {

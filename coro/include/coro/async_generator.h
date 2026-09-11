@@ -25,7 +25,6 @@
 
 namespace coro {
     namespace detail {
-
         // The awaiter returned by yield_value and final_suspend: both
         // suspend the producer and resume the consumer by symmetric
         // transfer. init consumer_ to noop so a yield with nobody
@@ -65,7 +64,6 @@ namespace coro {
             std::coroutine_handle<> consumer_{std::noop_coroutine()};
 
         public:
-
             void set_value(const T& v) noexcept requires std::copy_constructible<T> {
                 value_ = std::addressof(v);
                 movable_ = nullptr;
@@ -115,7 +113,6 @@ namespace coro {
         // that differs from promise_type's other duties.
         template <typename T>
         struct yields : element_slot<T> {
-
             resume_consumer yield_value(const T& v) noexcept requires std::copy_constructible<T> {
                 this->set_value(v);
                 return resume_consumer{this->consumer()};
@@ -135,9 +132,7 @@ namespace coro {
         static_assert(std::is_object_v<T>, "async_generator requires an object element type");
 
     public:
-
         struct promise_type : detail::yields<T> {
-
             async_generator get_return_object() noexcept {
                 return async_generator{std::coroutine_handle<promise_type>::from_promise(*this)};
             }
@@ -229,7 +224,6 @@ namespace coro {
         }
 
     private:
-
         explicit async_generator(handle_type h) noexcept : h_(h) {
         }
 

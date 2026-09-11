@@ -28,7 +28,7 @@ namespace owl {
 
     class Request final {
     public:
-        [[nodiscard]] static Request* from(h2o_req_t* const req) {
+        [[nodiscard]] static Request* make(h2o_req_t* const req) {
             const auto method_view = std::string_view{req->method.base, req->method.len};
             void* const memory = h2o_mem_alloc_shared(&req->pool, sizeof(Request), &dispose_request);
             return new(memory) Request{req, method_from_string(method_view), util::parse_query_req(req)};

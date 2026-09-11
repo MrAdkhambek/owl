@@ -28,8 +28,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -44,20 +42,20 @@ namespace redis {
 
     [[nodiscard]] constexpr std::string_view to_string(const reply_type t) noexcept {
         switch (t) {
-            case reply_type::nil: return "nil";
-            case reply_type::status: return "status";
-            case reply_type::string: return "string";
-            case reply_type::verbatim: return "verbatim";
-            case reply_type::integer: return "integer";
-            case reply_type::real: return "real";
-            case reply_type::boolean: return "boolean";
-            case reply_type::error: return "error";
-            case reply_type::array: return "array";
-            case reply_type::map: return "map";
-            case reply_type::set: return "set";
-            case reply_type::push: return "push";
-            case reply_type::bignum: return "bignum";
-            case reply_type::attribute: return "attribute";
+        case reply_type::nil: return "nil";
+        case reply_type::status: return "status";
+        case reply_type::string: return "string";
+        case reply_type::verbatim: return "verbatim";
+        case reply_type::integer: return "integer";
+        case reply_type::real: return "real";
+        case reply_type::boolean: return "boolean";
+        case reply_type::error: return "error";
+        case reply_type::array: return "array";
+        case reply_type::map: return "map";
+        case reply_type::set: return "set";
+        case reply_type::push: return "push";
+        case reply_type::bignum: return "bignum";
+        case reply_type::attribute: return "attribute";
         }
         std::unreachable();
     }
@@ -79,21 +77,21 @@ namespace redis {
 
         [[nodiscard]] constexpr reply_type type_of(const int hiredis_type) noexcept {
             switch (hiredis_type) {
-                case REDIS_REPLY_STRING: return reply_type::string;
-                case REDIS_REPLY_ARRAY: return reply_type::array;
-                case REDIS_REPLY_INTEGER: return reply_type::integer;
-                case REDIS_REPLY_NIL: return reply_type::nil;
-                case REDIS_REPLY_STATUS: return reply_type::status;
-                case REDIS_REPLY_ERROR: return reply_type::error;
-                case REDIS_REPLY_DOUBLE: return reply_type::real;
-                case REDIS_REPLY_BOOL: return reply_type::boolean;
-                case REDIS_REPLY_MAP: return reply_type::map;
-                case REDIS_REPLY_SET: return reply_type::set;
-                case REDIS_REPLY_ATTR: return reply_type::attribute;
-                case REDIS_REPLY_PUSH: return reply_type::push;
-                case REDIS_REPLY_BIGNUM: return reply_type::bignum;
-                case REDIS_REPLY_VERB: return reply_type::verbatim;
-                default: return reply_type::nil;
+            case REDIS_REPLY_STRING: return reply_type::string;
+            case REDIS_REPLY_ARRAY: return reply_type::array;
+            case REDIS_REPLY_INTEGER: return reply_type::integer;
+            case REDIS_REPLY_NIL: return reply_type::nil;
+            case REDIS_REPLY_STATUS: return reply_type::status;
+            case REDIS_REPLY_ERROR: return reply_type::error;
+            case REDIS_REPLY_DOUBLE: return reply_type::real;
+            case REDIS_REPLY_BOOL: return reply_type::boolean;
+            case REDIS_REPLY_MAP: return reply_type::map;
+            case REDIS_REPLY_SET: return reply_type::set;
+            case REDIS_REPLY_ATTR: return reply_type::attribute;
+            case REDIS_REPLY_PUSH: return reply_type::push;
+            case REDIS_REPLY_BIGNUM: return reply_type::bignum;
+            case REDIS_REPLY_VERB: return reply_type::verbatim;
+            default: return reply_type::nil;
             }
         }
 
@@ -138,7 +136,7 @@ namespace redis {
                 T out;
                 out.reserve(n);
                 for (std::size_t i = 0; i < n; ++i) {
-                    out.push_back(reply_view{node_->element[i]}.template as<typename T::value_type>());
+                    out.push_back(reply_view{node_->element[i]}.as<typename T::value_type>());
                 }
                 return out;
             } else if constexpr (std::same_as<T, std::string>) {
@@ -166,8 +164,12 @@ namespace redis {
                 if (has_text()) return parse<T>(text());
                 throw detail::conversion_error(type(), "a floating point number");
             } else {
-                static_assert(false, "redis: as<T> supports std::string, std::string_view, integers, floating point, bool, std::optional<U> and std::vector<U>");
+                static_assert(
+                    false,
+                    "redis: as<T> supports std::string, std::string_view, integers, floating point, bool, std::optional<U> and std::vector<U>");
             }
+
+            std::unreachable();
         }
 
         [[nodiscard]] const redisReply* raw() const noexcept {
@@ -177,14 +179,12 @@ namespace redis {
     private:
         [[nodiscard]] bool is_aggregate() const noexcept {
             switch (type()) {
-                case reply_type::array:
-                case reply_type::map:
-                case reply_type::set:
-                case reply_type::push:
-                case reply_type::attribute:
-                    return node_->element != nullptr || node_->elements == 0;
-                default:
-                    return false;
+            case reply_type::array:
+            case reply_type::map:
+            case reply_type::set:
+            case reply_type::push:
+            case reply_type::attribute: return node_->element != nullptr || node_->elements == 0;
+            default: return false;
             }
         }
 
@@ -195,14 +195,12 @@ namespace redis {
         // and nowhere else.
         [[nodiscard]] bool has_text() const noexcept {
             switch (type()) {
-                case reply_type::status:
-                case reply_type::string:
-                case reply_type::verbatim:
-                case reply_type::bignum:
-                case reply_type::real:
-                    return node_->str != nullptr;
-                default:
-                    return false;
+            case reply_type::status:
+            case reply_type::string:
+            case reply_type::verbatim:
+            case reply_type::bignum:
+            case reply_type::real: return node_->str != nullptr;
+            default: return false;
             }
         }
 

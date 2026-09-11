@@ -23,6 +23,16 @@ namespace {
     };
 
     struct not_awaitable {};
+
+    struct free_awaitable {};
+
+    struct free_awaiter {
+        [[nodiscard]] bool await_ready() const noexcept { return true; }
+        void await_suspend(std::coroutine_handle<>) const noexcept {}
+        [[nodiscard]] int await_resume() const noexcept { return 2; }
+    };
+
+    auto operator co_await(free_awaitable) noexcept { return free_awaiter{}; }
 }
 
 // The standard allows three spellings of "awaitable"; get_awaiter has to
@@ -30,13 +40,25 @@ namespace {
 TEST(AwaitableConcept, AcceptsAllThreeSpellings) {
     static_assert(coro::awaitable<member_awaitable>);
     static_assert(coro::awaitable<bare_awaiter>);
+    static_assert(coro::awaitable<free_awaitable>);
     static_assert(coro::awaitable<coro::task<int>>);
     static_assert(!coro::awaitable<not_awaitable>);
+}
+
+// An awaitable need not be an awaiter: member/free co_await produce one.
+TEST(AwaitableConcept, AwaiterIsTheThreeMethods) {
+    static_assert(coro::awaiter<bare_awaiter>);
+    static_assert(coro::awaiter<free_awaiter>);
+    static_assert(!coro::awaiter<member_awaitable>);
+    static_assert(!coro::awaiter<free_awaitable>);
+    static_assert(!coro::awaiter<not_awaitable>);
+    static_assert(!coro::awaiter<coro::task<int>>);
 }
 
 TEST(AwaitableConcept, ResultTypeNamesWhatCoAwaitProduces) {
     static_assert(std::is_same_v<coro::await_result_t<member_awaitable>, int>);
     static_assert(std::is_same_v<coro::await_result_t<bare_awaiter>, void>);
+    static_assert(std::is_same_v<coro::await_result_t<free_awaitable>, int>);
     static_assert(std::is_same_v<coro::await_result_t<coro::task<int>>, int>);
 }
 

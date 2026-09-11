@@ -41,8 +41,7 @@ namespace redis {
         // A range of scalars, one level deep. std::string is a range of
         // char, but char is not a scalar_arg, so it stays text.
         template <typename T>
-        concept range_arg = !scalar_arg<T> && std::ranges::input_range<T>
-            && scalar_arg<std::remove_cvref_t<std::ranges::range_reference_t<T>>>;
+        concept range_arg = !scalar_arg<T> && std::ranges::input_range<T> && scalar_arg<std::remove_cvref_t<std::ranges::range_reference_t<T>>>;
     }
 
     template <typename T>
