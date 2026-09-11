@@ -143,6 +143,40 @@ TEST_F(when_any_t, ChildrenCompletingOnPoolWorkersResumeTheParentOnce) {
     EXPECT_EQ(finished.load(), 400) << "losers did not run to completion";
 }
 
+namespace {
+    // Finishes on another thread, and holds await_suspend until that
+    // thread has run the rest of the child: by the time when_any looks,
+    // the race is already decided.
+    struct finishes_elsewhere_first {
+        [[nodiscard]] bool await_ready() const noexcept {
+            return false;
+        }
+
+        void await_suspend(const std::coroutine_handle<> h) const {
+            std::thread elsewhere([h] { h.resume(); });
+            elsewhere.join();
+        }
+
+        [[nodiscard]] int await_resume() const noexcept {
+            return 1;
+        }
+    };
+}
+
+// A win decided on another thread while when_any is still starting its
+// children must not cancel the ones it has not reached: there is no
+// cancellation, so every child runs.
+TEST_F(when_any_t, AWinOnAnotherThreadDoesNotSkipLaterChildren) {
+    std::atomic<int> finished{0};
+    auto body = [&]() -> coro::task<std::size_t> {
+        auto winner = co_await coro::when_any(finishes_elsewhere_first{}, counted(2, finished));
+        co_return winner.index();
+    };
+
+    EXPECT_EQ(coro::sync_wait(body()), 0u);
+    EXPECT_EQ(finished.load(), 1) << "the second child was never started";
+}
+
 // An empty range can never produce a winner, so it throws rather than
 // waiting forever.
 TEST_F(when_any_t, EmptyRangeThrows) {

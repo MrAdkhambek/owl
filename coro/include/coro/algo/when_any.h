@@ -75,9 +75,8 @@ namespace coro {
             // symmetric transfer for the child. Losers never touch this.
             std::atomic<std::size_t> pending{2};
 
-            // The awaitable, plus every child that was STARTED. A child that
-            // was never started -- an earlier sibling won synchronously --
-            // never completes, so it must never be counted.
+            // The awaitable, plus every child. Each is counted before it
+            // starts, so it is a holder before it can possibly finish.
             std::atomic<std::size_t> holders{1};
 
             virtual ~any_state() = default;
@@ -99,16 +98,18 @@ namespace coro {
                 return next;
             }
 
-            // Starts the children in order, stopping early once one of them
-            // has already won; each started child becomes a holder before it
-            // can possibly finish. Returns whether the parent has to wait.
+            // Starts every child in order; each becomes a holder before it
+            // can possibly finish. There is no early stop once a child has
+            // won: a win on another thread can land between two starts, and
+            // stopping there would cancel whichever child came next -- only
+            // sometimes, depending on timing. Returns whether the parent has
+            // to wait.
             template <typename Leaves>
             bool start(const std::coroutine_handle<> waiting, Leaves& leaves) {
                 parent = waiting;
                 for (auto& leaf : leaves) {
                     holders.fetch_add(1, std::memory_order_relaxed);
                     leaf.start();
-                    if (winner.load(std::memory_order_acquire) != no_winner) break;
                 }
                 return pending.fetch_sub(1, std::memory_order_acq_rel) != 1;
             }
