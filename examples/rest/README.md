@@ -6,7 +6,7 @@ sessions and rate limiting in redis.
 
 | File | axum counterpart | Holds |
 |---|---|---|
-| `src/rest/main.cpp` | `main.rs` | configuration from the environment, migrations, the composed router, the server |
+| `src/rest/main.cpp` | `main.rs` | `Config::make`, driver env, migrations, the composed router, the server |
 | `src/rest/app.h` | `state.rs` | `App`, the state every handler can take as `owl::State<App>` |
 | `src/rest/db.h/.cpp` | `db.rs` | the schema, applied once at startup through a standalone pool |
 | `monkey.py` | -- | the monkey test: random traffic, then a restart of each dependency under load |
@@ -41,14 +41,16 @@ cmake --build examples/rest/build
 ./examples/rest/build/rest
 ```
 
-Configuration is the environment, with defaults for a checkout:
+Bind knobs and drivers are `owl::Config::make` (CLI > `OWL_*` env > defaults). The example overlays four postgres connections and a 5s query deadline:
 
-| Variable | Default | |
+| | Default | |
 |---|---|---|
-| `REST_ADDRESS` | `127.0.0.1` | bind address; `0.0.0.0` in a container |
-| `REST_PORT` | `8080` | |
-| `REST_PG` | `postgres://localhost/rest` | the postgres DSN; the schema is created if missing |
-| `REST_REDIS` | `127.0.0.1:6379` | `host:port` of the Redis server |
+| `OWL_ADDRESS` / `--address` / `-a` | `127.0.0.1` | bind address; `0.0.0.0` in a container |
+| `OWL_PORT` / `--port` / `-p` | `8080` | |
+| `OWL_THREADS` / `--threads` / `-t` | `1` | compose uses `4` |
+| `OWL_BACKLOG` / `--backlog` / `-b` | `1024` | |
+| `OWL_PG` / `--pg` | `postgres://localhost/rest` | the postgres DSN; the schema is created if missing |
+| `OWL_REDIS` / `--redis` | `127.0.0.1:6379` | `host` or `host:port` of the Redis server |
 
 ## Docker
 

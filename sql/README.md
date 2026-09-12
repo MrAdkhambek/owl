@@ -131,9 +131,11 @@ outlive the pool, and a pool must outlive its leases.
 ```cpp
 owl::Server<App>::builder()
     .router(std::move(router))
-    .config({.port = 8080})
-    .with_psql({.dsn = "postgres://localhost/app", .connections = 4})
-    .with_sqlite({.path = "app.db"})
+    .config({
+        .port = 8080,
+        .psql = {{.dsn = "postgres://localhost/app", .connections = 4}},
+        .sqlite = {{.path = "app.db"}},
+    })
     .build_with(state)
     .start();
 ```
@@ -141,7 +143,8 @@ owl::Server<App>::builder()
 Every worker gets its own pools, built on that worker's `loop_reactor` and
 `loop_scheduler`, so a server with four threads and `connections = 4` opens up
 to sixteen postgres connections. Handlers extract `const sql::pool<sql::psql>&`
-or `const sql::pool<sql::sqlite>&`; a pool the builder never wired kicks 500.
+or `const sql::pool<sql::sqlite>&`; a pool `Config` never named kicks 500.
+`Config::make` fills `OWL_PG` / `--pg` and `OWL_SQLITE` / `--sqlite`.
 
 ## Drivers
 

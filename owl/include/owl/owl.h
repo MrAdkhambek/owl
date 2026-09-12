@@ -4,6 +4,7 @@
 
 #include <fstr/fstr.h>
 
+#include "owl/core/config.h"
 #include "owl/core/drivers.h"
 #include "owl/core/method.h"
 #include "owl/core/state.h"

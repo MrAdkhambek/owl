@@ -18,27 +18,11 @@
 
 #include <h2o.h>
 
+#include "owl/core/config.h"
 #include "owl/routing/router.h"
 #include "owl/detail.h"
 
-#ifdef OWL_ENABLE_POSTGRESQL
-#include <sql/psql/psql.h>
-#endif
-#ifdef OWL_ENABLE_SQLITE
-#include <sql/sqlite/sqlite.h>
-#endif
-#ifdef OWL_ENABLE_REDIS
-#include <redis/config.h>
-#endif
-
 namespace owl {
-    struct Config {
-        std::string address = "127.0.0.1";
-        std::uint16_t port = 8080;
-        int backlog = 1024;
-        unsigned threads = 1;
-    };
-
     template <typename S>
     class Server final {
     public:
@@ -75,33 +59,6 @@ namespace owl {
                 return std::forward<Self>(self);
             }
 
-#ifdef OWL_ENABLE_POSTGRESQL
-            // Per-worker postgres connections. Defined only under the
-            // macro, so calling it without the option is a compile error.
-            template <typename Self>
-            [[nodiscard]] auto&& with_psql(this Self&& self, sql::psql::config cfg) {
-                self.drivers_.psql = std::move(cfg);
-                return std::forward<Self>(self);
-            }
-#endif
-#ifdef OWL_ENABLE_SQLITE
-            // Per-worker sqlite connections, each on its own thread.
-            template <typename Self>
-            [[nodiscard]] auto&& with_sqlite(this Self&& self, sql::sqlite::config cfg) {
-                self.drivers_.sqlite = std::move(cfg);
-                return std::forward<Self>(self);
-            }
-#endif
-#ifdef OWL_ENABLE_REDIS
-            // Per-worker Redis client. Defined only under the macro, so
-            // calling it without the option is a compile error.
-            template <typename Self>
-            [[nodiscard]] auto&& with_redis(this Self&& self, redis::config cfg) {
-                self.drivers_.redis = std::move(cfg);
-                return std::forward<Self>(self);
-            }
-#endif
-
             // The state is the type: build_with is the only way to finish a
             // server, so a server that never got its state is a compile error
             // rather than a null read per request.
@@ -110,14 +67,13 @@ namespace owl {
                 if (!state) throw std::invalid_argument("Server: state is required");
                 if (!self.router_) throw std::invalid_argument("Server: router is required");
                 if (!self.config_) throw std::invalid_argument("Server: config is required");
-                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state), std::move(self.drivers_)};
+                return Server{std::move(self.router_), std::move(self.config_), std::move(self.layers_), std::move(state)};
             }
 
         private:
             std::unique_ptr<Router<S>> router_;
             std::unique_ptr<Config> config_;
             MiddlewareChain<S> layers_{};
-            detail::DriverConfigs drivers_{};
         };
 
         // Pinned in place: every worker's context points into globalconf_,
@@ -157,8 +113,7 @@ namespace owl {
             std::unique_ptr<Router<S>> router,
             std::unique_ptr<Config> config,
             MiddlewareChain<S> layers,
-            std::shared_ptr<S> state,
-            detail::DriverConfigs drivers
+            std::shared_ptr<S> state
         ) : router_(std::move(router)),
             config_(std::move(config)),
             layers_(std::move(layers)),
@@ -184,7 +139,7 @@ namespace owl {
             // precede h2o_context_init: each context sizes its per-handler slot array from the
             // handlers registered so far.
             ////////////////////////////////////////////////////////////////////////////////////////////////
-            (void)detail::make_dispatcher<S>(pathconf, router_.get(), &layers_, state_, std::move(drivers));
+            (void)detail::make_dispatcher<S>(pathconf, router_.get(), &layers_, state_, *config_);
 
             ////////////////////////////////////////////////////////////////////////////////////////////////
             // h2o's concurrency model is loop-per-thread: each worker owns an event loop and a

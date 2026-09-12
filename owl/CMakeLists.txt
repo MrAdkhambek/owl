@@ -20,6 +20,7 @@ target_sources(owl INTERFACE
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/metrics.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/state.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/token.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/core/config.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/coro/loop_reactor.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/coro/loop_scheduler.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/include/owl/extract/extractors.h"
@@ -144,6 +145,7 @@ if (BUILD_TESTING)
     owl_add_test(test_loop_scheduler)
     owl_add_test(test_loop_reactor)
     owl_add_test(test_builder)
+    owl_add_test(test_config)
     owl_add_test(test_ws_message)
     owl_add_test(test_ws_router)
     owl_add_test(test_ws)

@@ -14,8 +14,7 @@
 // the traits rather than against each driver: wire() below builds every
 // wired driver the same way, and one extractor in extract/from_context.h
 // serves them all. Adding a driver is a specialization here, a member on
-// Context and on DriverConfigs, and a builder setter -- three one-liners
-// and this block, rather than eight blocks spread out.
+// Context and on Config, rather than eight blocks spread out.
 //
 // The primary template is left undefined on purpose: driver_type is then
 // exactly "something this header describes", which is what the extractor

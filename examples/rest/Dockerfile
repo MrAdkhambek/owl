@@ -59,8 +59,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /build/rest /usr/local/bin/rest
 # The compose file sets these; the defaults make a bare `docker run` work
 # against a postgres and a redis on the same network.
-ENV REST_ADDRESS=0.0.0.0 REST_PORT=8080 \
-    REST_PG=postgres://rest:rest@postgres:5432/rest \
-    REST_REDIS=redis:6379
+ENV OWL_ADDRESS=0.0.0.0 OWL_PORT=8080 OWL_THREADS=4 \
+    OWL_PG=postgres://rest:rest@postgres:5432/rest \
+    OWL_REDIS=redis:6379
 EXPOSE 8080
 CMD ["rest"]

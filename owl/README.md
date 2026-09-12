@@ -175,22 +175,35 @@ See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_
 
 ## SQL
 
-See [`sql/README.md`](../sql/README.md). With a driver enabled (SQLite is, by default; Postgres with `-DOWL_ENABLE_POSTGRESQL=ON`), `owl::owl` pulls `owl::sql`, the builder gains `with_psql(sql::psql::config)` and `with_sqlite(sql::sqlite::config)`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
+See [`sql/README.md`](../sql/README.md). With a driver enabled (SQLite is, by default; Postgres with `-DOWL_ENABLE_POSTGRESQL=ON`), `owl::owl` pulls `owl::sql`, `Config` grows `psql` / `sqlite`, and every worker gets its own pools on its own loop. A handler takes the pool by `const&` and awaits `sql::query<"...">(pool, args...)`; the wait never leaves the worker.
 
-See [`redis/README.md`](../redis/README.md). With `-DOWL_ENABLE_REDIS=ON`, `owl::owl` pulls `owl::redis`, the builder gains `with_redis(redis::config)`, and every worker gets its own client on its own loop. A handler takes it by `const&` and awaits `rd.command("GET", key)` or one of the typed helpers on it; a subscription is `redis::subscribe(rd, {channel})`, ended by scope or a `std::stop_token`.
+See [`redis/README.md`](../redis/README.md). With `-DOWL_ENABLE_REDIS=ON`, `owl::owl` pulls `owl::redis`, `Config` grows `redis`, and every worker gets its own client on its own loop. A handler takes it by `const&` and awaits `rd.command("GET", key)` or one of the typed helpers on it; a subscription is `redis::subscribe(rd, {channel})`, ended by scope or a `std::stop_token`.
 
 ## Server
 
 ```cpp
 owl::Server<AppState> server = owl::Server<AppState>::builder()
                      .router(std::move(router))
-                     .config({.port = 8080})
-                     .thread(4)
+                     .config({.port = 8080, .threads = 4})
                      .build_with(std::make_shared<AppState>());
 server.start();
 ```
 
-`router` is a `Router<S>`. `.thread(N)` starts N workers — Node cluster, in-process. Worker 0 runs on the calling thread; the rest are extra threads. Each worker is a single-threaded event loop with its own `SO_REUSEPORT` listener. They share the router.
+`router` is a `Router<S>`. `threads` starts N workers — Node cluster, in-process. Worker 0 runs on the calling thread; the rest are extra threads. Each worker is a single-threaded event loop with its own `SO_REUSEPORT` listener. They share the router. `.thread(N)` is the sanctioned post-config tweak; a second `.config()` throws because it would reset every field not repeated.
+
+`Config::make(argc, argv)` parses CLI over `OWL_*` env over defaults. Bad integers, unknown flags, leftover positionals, and empty values throw `std::invalid_argument`.
+
+| | env | flag | default |
+|---|---|---|---|
+| bind | `OWL_ADDRESS` | `-a` / `--address` | `127.0.0.1` |
+| port | `OWL_PORT` | `-p` / `--port` | `8080` |
+| workers | `OWL_THREADS` | `-t` / `--threads` | `1` |
+| listen backlog | `OWL_BACKLOG` | `-b` / `--backlog` | `1024` |
+| postgres DSN | `OWL_PG` | `--pg` | unset |
+| sqlite path | `OWL_SQLITE` | `--sqlite` | unset |
+| redis `host` or `host:port` | `OWL_REDIS` | `--redis` | unset |
+
+Driver fields are `std::optional` and exist only under their `OWL_ENABLE_*` macros. Unset means the extractor kicks 500, not a connection to localhost.
 
 Do not block the loop. Offload with a pool; `co_await loop.schedule()` or `loop.post(handle)` hops back (Node's `setImmediate` from another thread). Resume is always on the **same** worker.
 
@@ -206,7 +219,7 @@ Each box below is one turn of that worker's `h2o_evloop_run`:
 
 | Directory  | Holds                                                                                       |
 |------------|---------------------------------------------------------------------------------------------|
-| `core/`    | vocabulary types with no local dependencies: `Method`, `State`, `Context`, `KickToken`, pool allocator |
+| `core/`    | vocabulary types: `Method`, `Config`, `State`, `Context`, `KickToken` |
 | `util/`    | `pool_map`, string helpers                                                                  |
 | `http/`    | `Request`, `Response`, cookies, reason phrases; `detail/` for send/finish                   |
 | `extract/` | parsing, extractor types, and the `FromContext` dispatch                                    |

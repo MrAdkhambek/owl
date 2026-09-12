@@ -168,14 +168,14 @@ Config: `host`, `port`, `username` (empty is the default user), `password`
 ```cpp
 owl::Server<App>::builder()
     .router(std::move(router))
-    .config({.port = 8080})
-    .with_redis({.host = "127.0.0.1", .port = 6379})
+    .config({.port = 8080, .redis = {{.host = "127.0.0.1", .port = 6379}}})
     .build_with(state)
     .start();
 ```
 
 Every worker gets its own client on its own loop reactor; handlers extract
-`const redis::client&`. A client the builder never wired kicks 500.
+`const redis::client&`. A client `Config` never named kicks 500. `Config::make`
+fills `OWL_REDIS` / `--redis` (`host` or `host:port`, port 6379 if omitted).
 
 ## Not in this version
 

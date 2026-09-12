@@ -59,7 +59,7 @@ namespace {
             auto* const hostconf = h2o_config_register_host(&globalconf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             auto* const pathconf = h2o_config_register_path(hostconf, "/", 0);
 
-            owl::detail::DriverConfigs configs;
+            owl::Config configs;
 #ifdef OWL_ENABLE_POSTGRESQL
             if (psql_dsn != nullptr) configs.psql = sql::psql::config{.dsn = psql_dsn};
 #else
@@ -222,22 +222,21 @@ TEST(OwlWiring, RedisCommandCompletesOnTheWorkerLoop) {
 }
 #endif
 
-TEST(OwlWiring, BuilderAcceptsTheDriverConfigs) {
+TEST(OwlWiring, BuilderAcceptsDriversOnConfig) {
     const sql_test::temp_db db{"builder"};
-    // Preprocessor lines inside one expression: the chain stays a single
-    // rvalue pipeline, with no self-move of the builder.
-    const owl::Server<App> server = owl::Server<App>::builder()
-                                        .router(owl::Router<App>::make())
-                                        .config({.port = 0})
+    owl::Config cfg{.port = 0};
 #ifdef OWL_ENABLE_SQLITE
-                                        .with_sqlite({.path = db.path.string()})
+    cfg.sqlite = sql::sqlite::config{.path = db.path.string()};
 #endif
 #ifdef OWL_ENABLE_POSTGRESQL
-                                        .with_psql({.dsn = "postgres://127.0.0.1:1/nope"})
+    cfg.psql = sql::psql::config{.dsn = "postgres://127.0.0.1:1/nope"};
 #endif
 #ifdef OWL_ENABLE_REDIS
-                                        .with_redis({.port = 1})
+    cfg.redis = redis::config{.port = 1};
 #endif
+    const owl::Server<App> server = owl::Server<App>::builder()
+                                        .router(owl::Router<App>::make())
+                                        .config(std::move(cfg))
                                         .build_with(std::make_shared<App>());
     EXPECT_NE(server.port(), 0);
 }

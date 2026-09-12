@@ -34,10 +34,11 @@ services:
     ports:
       - "8080:8080"
     environment:
-      REST_ADDRESS: 0.0.0.0
-      REST_PORT: "8080"
-      REST_PG: postgres://rest:rest@postgres:5432/rest
-      REST_REDIS: redis:6379
+      OWL_ADDRESS: 0.0.0.0
+      OWL_PORT: "8080"
+      OWL_THREADS: "4"
+      OWL_PG: postgres://rest:rest@postgres:5432/rest
+      OWL_REDIS: redis:6379
     # Both are restarted under the monkey test's chaos phase, so the app
     # must survive losing either one; it reconnects on the next request.
     depends_on:

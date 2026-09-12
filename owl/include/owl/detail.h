@@ -9,27 +9,13 @@
 
 #include "coro/task.h"
 #include "owl/coro/loop_scheduler.h"
+#include "owl/core/config.h"
 #include "owl/core/drivers.h"
 #include "owl/core/metrics.h"
 #include "owl/http/detail/finish.h"
 #include "owl/http/request.h"
 #include "owl/routing/router.h"
 #include "owl/ws/detail/engine.h"
-
-#if defined(OWL_ENABLE_POSTGRESQL) || defined(OWL_ENABLE_SQLITE) || defined(OWL_ENABLE_REDIS)
-#include <optional>
-#endif
-#ifdef OWL_ENABLE_POSTGRESQL
-#include <sql/psql/psql.h>
-#endif
-#ifdef OWL_ENABLE_SQLITE
-#include <sql/sqlite/sqlite.h>
-#endif
-#ifdef OWL_ENABLE_REDIS
-#include <coro/io/reactor_ref.h>
-#include <redis/client.h>
-#include <redis/config.h>
-#endif
 
 namespace owl::detail {
     // The h2o global config, disposed with it. Disposing it is what runs
@@ -78,29 +64,13 @@ namespace owl::detail {
         Worker& operator=(const Worker&) = delete;
     };
 
-    // The driver configs the builder collected, as one value that travels
-    // through Server, the Dispatcher and on_context_init unchanged; the
-    // macros stay only where a driver type is named. Empty when no driver
-    // is enabled.
-    struct DriverConfigs final {
-#ifdef OWL_ENABLE_POSTGRESQL
-        std::optional<sql::psql::config> psql;
-#endif
-#ifdef OWL_ENABLE_SQLITE
-        std::optional<sql::sqlite::config> sqlite;
-#endif
-#ifdef OWL_ENABLE_REDIS
-        std::optional<redis::config> redis;
-#endif
-    };
-
     template <typename S>
     struct Dispatcher {
         h2o_handler_t super;
         const Router<S>* router;
         const MiddlewareChain<S>* server_layers;
         std::shared_ptr<S> state;
-        DriverConfigs drivers;
+        Config config;
     };
 
     // Runs the request through its chains and the handler, then sends what
@@ -198,13 +168,13 @@ namespace owl::detail {
         // Each driver holds a handle to a member of this Context, so
         // they are built now rather than with it; how is drivers.h's.
 #ifdef OWL_ENABLE_POSTGRESQL
-        wire<sql::pool<sql::psql>>(*context, dispatcher->drivers);
+        wire<sql::pool<sql::psql>>(*context, dispatcher->config);
 #endif
 #ifdef OWL_ENABLE_SQLITE
-        wire<sql::pool<sql::sqlite>>(*context, dispatcher->drivers);
+        wire<sql::pool<sql::sqlite>>(*context, dispatcher->config);
 #endif
 #ifdef OWL_ENABLE_REDIS
-        wire<redis::client>(*context, dispatcher->drivers);
+        wire<redis::client>(*context, dispatcher->config);
 #endif
         h2o_context_set_handler_context(ctx, handler, context);
     }
@@ -283,7 +253,7 @@ namespace owl::detail {
         const Router<S>* const router,
         const MiddlewareChain<S>* const server_layers,
         std::shared_ptr<S> state,
-        DriverConfigs drivers
+        Config config
     ) {
         auto* const dispatcher = reinterpret_cast<Dispatcher<S>*>(h2o_create_handler(pathconf, sizeof(Dispatcher<S>)));
 
@@ -297,7 +267,7 @@ namespace owl::detail {
         dispatcher->router = router;
         dispatcher->server_layers = server_layers;
         std::construct_at(&dispatcher->state, std::move(state));
-        std::construct_at(&dispatcher->drivers, std::move(drivers));
+        std::construct_at(&dispatcher->config, std::move(config));
 
         return dispatcher;
     }
