@@ -16,7 +16,6 @@
 
 #include "owl/core/method.h"
 #include "owl/core/state.h"
-#include "owl/coro/loop_scheduler.h"
 #include "owl/extract/from_context.h"
 #include "owl/http/request.h"
 #include "owl/http/response.h"
@@ -184,8 +183,7 @@ namespace owl {
             if (!insert_ws(Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
                 auto args = extract_all<Args...>(ctx, req);
                 if (!args) [[unlikely]] co_return to_response(std::move(args).error());
-                co_return Response::websocket(
-                    std::make_shared<detail::WsRoute<Args...>>(handler, detail::to_ws_slots(*std::move(args))));
+                co_return Response::websocket(std::make_shared<detail::WsRoute<Args...>>(handler, detail::to_ws_slots(*std::move(args))));
             })) {
                 throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
             }
@@ -218,12 +216,11 @@ namespace owl {
         // Constructor arguments, forwarded once. Excluded when the single
         // argument is already a shared_ptr<C>, or this and the overload
         // above would both match.
-        template <fstr::fstr Pattern, typename C, typename... CtorArgs>
-            requires (!(sizeof...(CtorArgs) == 1 && (std::is_same_v<std::remove_cvref_t<CtorArgs>, std::shared_ptr<C>> && ...)))
+        template <fstr::fstr Pattern, typename C, typename... CtorArgs> requires (!(sizeof...(CtorArgs) == 1 && (std::is_same_v<
+            std::remove_cvref_t<CtorArgs>, std::shared_ptr<C>> && ...)))
         [[nodiscard]] Router ws(CtorArgs... args) && {
             static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
-            static_assert(std::is_constructible_v<C, CtorArgs...>,
-                          "the controller cannot be constructed from these arguments");
+            static_assert(std::is_constructible_v<C, CtorArgs...>, "the controller cannot be constructed from these arguments");
             static_assert(ws::detail::is_extractor_tuple_v<ws::detail::extractors_of_t<C>>,
                           "a controller's Extractors must be a std::tuple<...> of extractors");
 
@@ -232,8 +229,7 @@ namespace owl {
             // what makes members shared state rather than per-connection
             // state, and what requires the controller to be safe for
             // concurrent use when threads > 1.
-            register_controller<Pattern, C>(std::make_shared<C>(std::move(args)...),
-                                            static_cast<ws::detail::extractors_of_t<C>*>(nullptr));
+            register_controller<Pattern, C>(std::make_shared<C>(std::move(args)...), static_cast<ws::detail::extractors_of_t<C>*>(nullptr));
             return std::move(*this);
         }
 
@@ -438,7 +434,7 @@ namespace owl {
     };
 
     template <typename S>
-    inline detail::RouteNode<S>* Router<S>::node_for(const std::string_view pattern) {
+    detail::RouteNode<S>* Router<S>::node_for(const std::string_view pattern) {
         const detail::PatternInfo info = detail::parse_pattern(pattern);
         if (!info.ok) return nullptr;
 
@@ -463,7 +459,7 @@ namespace owl {
     }
 
     template <typename S>
-    inline bool Router<S>::insert(const Method method, const std::string_view pattern, Handler<S> handler) {
+    bool Router<S>::insert(const Method method, const std::string_view pattern, Handler<S> handler) {
         detail::RouteNode<S>* const node = node_for(pattern);
         if (node == nullptr || node->handler_for(method)) return false;
         node->handlers.emplace_back(method, std::move(handler));
@@ -473,7 +469,7 @@ namespace owl {
     }
 
     template <typename S>
-    inline bool Router<S>::insert_ws(const std::string_view pattern, Handler<S> handler) {
+    bool Router<S>::insert_ws(const std::string_view pattern, Handler<S> handler) {
         detail::RouteNode<S>* const node = node_for(pattern);
         if (node == nullptr || static_cast<bool>(node->websocket)) return false;
         node->websocket = std::move(handler);

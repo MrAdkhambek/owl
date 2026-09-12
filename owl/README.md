@@ -11,7 +11,7 @@ coroutine handlers that never leave the event loop.
 [![CMake](https://img.shields.io/badge/target-owl::owl-064F8C?logo=cmake&logoColor=white)](#)
 [![header-only](https://img.shields.io/badge/header--only-yes-success)](#)
 
-[Handlers](#handlers) · [Responses](#responses) · [Extractors](#extractors) · [State](#state) · [Middleware](#middleware) · [Server](#server) · [Layout](#layout) · [Roadmap](#roadmap)
+[Handlers](#handlers) · [Responses](#responses) · [Extractors](#extractors) · [State](#state) · [Middleware](#middleware) · [WebSocket](#websocket) · [Server](#server) · [Layout](#layout) · [Roadmap](#roadmap)
 
 </div>
 
@@ -159,15 +159,37 @@ auto router = owl::Router<AppState>::make()
 
 ## WebSocket
 
-A path takes a send/recv coroutine or a shared controller. Extractors run before the upgrade — the request is gone at 101 — so they must own their values. `const T&` is allowed only for driver and loop refs, which outlive the connection on their worker. `owl::get` and `.ws` may share a pattern; a GET without Upgrade on a WS-only path is 404. One controller instance is built at registration and reached from every worker, so it must be safe for concurrent use, the same contract `State<T>` carries. `send` is awaitable so it can gain backpressure later; it does not have it yet.
+A path takes a send/recv coroutine or a shared controller. Extractors run before the upgrade — the request is gone at 101 — so they must own their values (`Path<"n", std::string>`, not `PathView`). `const T&` is allowed only for driver and loop refs, which outlive the connection on their worker. `owl::get` and `.ws` may share a pattern; a GET without Upgrade on a WS-only path is 404. One controller instance is built at registration and reached from every worker, so it must be safe for concurrent use, the same contract `State<T>` carries. `send` is awaitable so it can gain backpressure later; it does not have it yet.
+
+A working echo, rooms, and chat page is [`examples/ws`](../examples/ws/README.md).
 
 ```cpp
+coro::task<void> room(owl::ws::Socket sock, owl::Path<"id", int> id) {
+    while (const auto msg = co_await sock.recv()) {
+        co_await sock.send(std::format("{}: {}", id.value, msg->data()));
+    }
+}
+
+struct Chat final {
+    using Extractors = std::tuple<owl::Path<"room", std::string>>;
+    coro::task<void> on_message(owl::ws::Socket, owl::ws::Message, owl::Path<"room", std::string>);
+};
+
 owl::Router<App>::make()
     .route<"/chat">(owl::get(page))
-    .ws<"/chat", Chat>(app)
-    .ws<"/rooms/{id}">(room)
-    .ws<"/echo/{user}", Echo>(echo);
+    .ws<"/chat/{room}", Chat>()
+    .ws<"/rooms/{id}">(room);
 ```
+
+### Controller extractors
+
+A coroutine lists extractors on the function. A controller cannot: `on_message` may be overloaded, templated, or defaulted, and deduction from that would fail unreadably. So the pack is a type alias, not inferred:
+
+```cpp
+using Extractors = std::tuple<owl::Path<"room", std::string>, owl::Header<"authorization", std::string>>;
+```
+
+Absent means none. Each method may take the pack or skip it (`on_disconnect` often skips). The values live in the per-connection frame, never on the shared instance — a member would race the next handshake.
 
 ## Prometheus
 
@@ -236,7 +258,7 @@ Not started. Each item should sit on `coro` + the event loop the way handlers al
 
 |                       | Sketch                                                                                |
 |-----------------------|---------------------------------------------------------------------------------------|
-| **WebSocket**         | Coroutine `.ws<Pattern>(fn)`, or a shared controller `.ws<Pattern, C>(args)` / `.ws<Pattern, C>(ptr)`. Owning extractors; `const T&` only for driver/loop refs. GET+WS on one path. Thread-safe shared instance. No backpressure yet. |
+| **WebSocket**         | In. Remaining: backpressure on `send`; controller extractors stay a declared `using Extractors` tuple (not deduced from `on_message`). |
 | **Redis**             | RESP client on `coro::native_reactor`. Extractor or `State<>` for a shared pool.      |
 | **Static files**      | Route that sendfiles a directory. Range requests later.                               |
 | **TLS**               | HTTPS as a `Server::Builder` switch; h2o already links OpenSSL.                       |

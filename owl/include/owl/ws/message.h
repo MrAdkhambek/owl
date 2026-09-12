@@ -20,21 +20,43 @@ namespace owl::ws {
     public:
         Message() = default;
 
-        Message(std::string data, const Opcode opcode) noexcept
-            : data_(std::move(data)), opcode_(opcode) {
+        Message(
+            std::string data,
+            const Opcode opcode
+        ) noexcept :
+            data_(std::move(data)),
+            opcode_(opcode) {
         }
 
-        [[nodiscard]] const std::string& data() const & noexcept { return data_; }
-        [[nodiscard]] std::string data() && noexcept { return std::move(data_); }
+        [[nodiscard]] const std::string& data() const & noexcept {
+            return data_;
+        }
 
-        [[nodiscard]] Opcode opcode() const noexcept { return opcode_; }
-        [[nodiscard]] bool is_text() const noexcept { return opcode_ == Opcode::Text; }
-        [[nodiscard]] bool is_binary() const noexcept { return opcode_ == Opcode::Binary; }
+        [[nodiscard]] std::string data() && noexcept {
+            return std::move(data_);
+        }
+
+        [[nodiscard]] Opcode opcode() const noexcept {
+            return opcode_;
+        }
+
+        [[nodiscard]] bool is_text() const noexcept {
+            return opcode_ == Opcode::Text;
+        }
+
+        [[nodiscard]] bool is_binary() const noexcept {
+            return opcode_ == Opcode::Binary;
+        }
 
         // Binary safe: a text frame may still contain NUL, and a binary one
         // usually does. size() is the only honest length.
-        [[nodiscard]] std::size_t size() const noexcept { return data_.size(); }
-        [[nodiscard]] bool empty() const noexcept { return data_.empty(); }
+        [[nodiscard]] std::size_t size() const noexcept {
+            return data_.size();
+        }
+
+        [[nodiscard]] bool empty() const noexcept {
+            return data_.empty();
+        }
 
     private:
         std::string data_;

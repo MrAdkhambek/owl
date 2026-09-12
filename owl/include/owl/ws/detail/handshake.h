@@ -15,8 +15,7 @@
 namespace owl::ws::detail {
     [[nodiscard]] inline bool is_websocket_handshake(const Request& req) {
         const auto* const raw = req.raw();
-        if (raw->upgrade.base == nullptr
-            || !util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket")) {
+        if (raw->upgrade.base == nullptr || !util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket")) {
             return false;
         }
         if (req.header("Sec-WebSocket-Version") != "13") {

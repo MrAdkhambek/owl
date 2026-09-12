@@ -17,36 +17,37 @@ namespace owl::detail {
     // owned outright. Views into the request never reach this: ws_checks
     // refuses them.
     template <typename Arg>
-    using WsSlot = std::conditional_t<std::is_reference_v<Arg>,
-                                      const std::remove_cvref_t<Arg>*,
-                                      std::remove_cvref_t<Arg>>;
+    using ws_slot = std::conditional_t<std::is_reference_v<Arg>,
+                                       const std::remove_cvref_t<Arg>*,
+                                       std::remove_cvref_t<Arg>>;
 
     template <typename Arg>
-    [[nodiscard]] WsSlot<Arg> to_ws_slot(auto&& extracted) {
+    [[nodiscard]] ws_slot<Arg> to_ws_slot(auto&& extracted) {
         if constexpr (std::is_reference_v<Arg>) return &extracted;
-        else return std::move(extracted);
+        else return std::forward<decltype(extracted)>(extracted);
     }
 
     template <typename Arg>
-    [[nodiscard]] decltype(auto) from_ws_slot(WsSlot<Arg>& slot) {
+    [[nodiscard]] decltype(auto) from_ws_slot(ws_slot<Arg>& slot) {
         if constexpr (std::is_reference_v<Arg>) return *slot;
         else return std::move(slot);
     }
 
     template <typename... Args>
-    [[nodiscard]] std::tuple<WsSlot<Args>...> to_ws_slots(std::tuple<Args...>&& extracted) {
+    [[nodiscard]] std::tuple<ws_slot<Args>...> to_ws_slots(std::tuple<Args...>&& extracted) {
         return [&]<std::size_t... I>(std::index_sequence<I...>) {
-            return std::tuple<WsSlot<Args>...>{to_ws_slot<Args>(std::get<I>(std::move(extracted)))...};
+            return std::tuple<ws_slot<Args>...>{to_ws_slot<Args>(std::get<I>(std::move(extracted)))...};
         }(std::index_sequence_for<Args...>{});
     }
 
     template <typename... Args>
     struct WsRoute final : WsUpgrade {
         coro::task<void> (*handler)(ws::Socket, Args...);
-        std::tuple<WsSlot<Args>...> slots;
+        std::tuple<ws_slot<Args>...> slots;
 
-        WsRoute(coro::task<void> (*fn)(ws::Socket, Args...), std::tuple<WsSlot<Args>...> extracted)
-            : handler(fn), slots(std::move(extracted)) {
+        WsRoute(coro::task<void> (*fn)(ws::Socket, Args...), std::tuple<ws_slot<Args>...> extracted)
+            : handler(fn),
+              slots(std::move(extracted)) {
         }
 
         // The task is lazy, so the values are moved into its frame here --
@@ -74,10 +75,13 @@ namespace owl::detail {
     template <typename C, typename... Args>
     struct WsController final : WsUpgrade {
         std::shared_ptr<C> instance;
-        std::tuple<WsSlot<Args>...> slots;
+        std::tuple<ws_slot<Args>...> slots;
 
-        WsController(std::shared_ptr<C> c, std::tuple<WsSlot<Args>...> extracted)
-            : instance(std::move(c)), slots(std::move(extracted)) {
+        WsController(
+            std::shared_ptr<C> c,
+            std::tuple<ws_slot<Args>...> extracted
+        ) : instance(std::move(c)),
+            slots(std::move(extracted)) {
         }
 
         [[nodiscard]] coro::task<void> make(ws::detail::Session* session) override {

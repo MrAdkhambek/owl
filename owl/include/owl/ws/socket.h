@@ -66,7 +66,9 @@ namespace owl::ws {
         // does not change a single call site.
         class Send final {
         public:
-            [[nodiscard]] bool await_ready() const noexcept { return true; }
+            [[nodiscard]] bool await_ready() const noexcept {
+                return true;
+            }
 
             void await_suspend(std::coroutine_handle<>) const noexcept {
             }
@@ -75,7 +77,9 @@ namespace owl::ws {
             }
         };
 
-        [[nodiscard]] Recv recv() const noexcept { return Recv{session_}; }
+        [[nodiscard]] Recv recv() const noexcept {
+            return Recv{session_};
+        }
 
         // One overload on purpose. A string_view companion looked like a free
         // optimisation and was really an ambiguity: passing a std::string made
@@ -89,9 +93,13 @@ namespace owl::ws {
 
         // Starts the closing handshake. The handler's next recv() reports
         // nullopt; returning from the handler does this anyway.
-        void close() const noexcept { detail::begin_close(session_); }
+        void close() const noexcept {
+            detail::begin_close(session_);
+        }
 
-        [[nodiscard]] bool open() const noexcept { return detail::is_open(session_); }
+        [[nodiscard]] bool open() const noexcept {
+            return detail::is_open(session_);
+        }
 
         // A stable identity for the connection, valid until it closes.
         //
@@ -99,7 +107,9 @@ namespace owl::ws {
         // so it needs something to key per-connection state on; this is it.
         // Opaque on purpose -- it is the session address, and nothing but
         // comparison and hashing is meaningful.
-        [[nodiscard]] const void* id() const noexcept { return session_; }
+        [[nodiscard]] const void* id() const noexcept {
+            return session_;
+        }
 
         [[nodiscard]] friend bool operator==(const Socket a, const Socket b) noexcept {
             return a.session_ == b.session_;
