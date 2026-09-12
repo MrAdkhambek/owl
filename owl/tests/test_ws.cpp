@@ -825,3 +825,30 @@ TEST(Ws, PongKeepsAQuietPeerConnected) {
     client.send_close();
     client.read_close_and_eof();
 }
+
+// RFC 6455 8.1. wslay validates text messages itself (its _utf8d DFA) and
+// fails the connection with 1007, so owl adds no check of its own; these
+// two pin that behaviour, and that binary frames are left alone.
+TEST(Ws, InvalidUtf8TextClosesWith1007) {
+    auto router = owl::Router<App>::make().ws<"/echo">(echo);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    ASSERT_EQ(client.handshake("/echo").status, 101);
+    client.send_frame(0x1, "\xC3\x28");
+    EXPECT_EQ(client.read_close_code(), 1007);
+}
+
+TEST(Ws, BinaryFramesAreNotUtf8Checked) {
+    auto router = owl::Router<App>::make().ws<"/echo">(echo);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    ASSERT_EQ(client.handshake("/echo").status, 101);
+    client.send_frame(0x2, "\xC3\x28");
+    std::uint8_t opcode = 0;
+    std::string payload;
+    EXPECT_TRUE(client.read_frame(opcode, payload));
+    EXPECT_EQ(opcode, 0x2);
+    EXPECT_EQ(payload, "\xC3\x28");
+    client.send_close();
+    client.read_close_and_eof();
+}
