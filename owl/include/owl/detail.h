@@ -85,7 +85,7 @@ namespace owl::detail {
         const MiddlewareChain<S>* const server_layers,
         const Context<S>* const context
     ) {
-        constexpr Exchange exchange{};
+        const Exchange exchange{};
         try {
             const Next<S> next{chains->splice(server_layers), handler, context};
             auto response = co_await next(*request);
