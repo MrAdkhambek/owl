@@ -51,34 +51,43 @@ namespace {
     }
 
     // Server::start() never returns and has no stop yet, so the live tests
-    // build one worker from Server's own parts and pump it on a thread they
-    // can stop.
+    // build workers from Server's own parts and pump each on a thread they
+    // can stop. Each worker listens on its own port, so a test chooses the
+    // worker a client lands on.
     struct LiveWorker final {
         owl::MiddlewareChain<App> layers;
         owl::detail::GlobalConf globalconf;
-        std::unique_ptr<owl::detail::Worker> worker;
+        std::vector<std::unique_ptr<owl::detail::Worker>> workers;
         std::atomic<bool> stop{false};
-        std::thread pump;
+        std::vector<std::thread> pumps;
+        std::vector<std::uint16_t> ports;
         std::uint16_t port = 0;
 
-        explicit LiveWorker(const owl::Router<App>& router) {
+        explicit LiveWorker(const owl::Router<App>& router, const std::size_t count = 1) {
             std::signal(SIGPIPE, SIG_IGN);
             auto* const host = h2o_config_register_host(&globalconf.conf, h2o_iovec_init(H2O_STRLIT("default")), 65535);
             auto* const path = h2o_config_register_path(host, "/", 0);
             (void)owl::detail::make_dispatcher<App>(path, &router, &layers, std::make_shared<App>(), {});
-            worker = std::make_unique<owl::detail::Worker>(&globalconf.conf);
-            const int fd = listen_loopback();
-            port = owl::detail::port_of(fd);
-            worker->listener = h2o_evloop_socket_create(worker->ctx.loop, fd, H2O_SOCKET_FLAG_DONT_READ);
-            worker->listener->data = worker.get();
-            h2o_socket_read_start(worker->listener, &owl::detail::on_accept);
-            pump = std::thread{[this] { while (!stop.load()) h2o_evloop_run(worker->ctx.loop, 5); }};
+            for (std::size_t i = 0; i < count; ++i) {
+                auto& worker = *workers.emplace_back(std::make_unique<owl::detail::Worker>(&globalconf.conf));
+                const int fd = listen_loopback();
+                ports.push_back(owl::detail::port_of(fd));
+                worker.listener = h2o_evloop_socket_create(worker.ctx.loop, fd, H2O_SOCKET_FLAG_DONT_READ);
+                worker.listener->data = &worker;
+                h2o_socket_read_start(worker.listener, &owl::detail::on_accept);
+            }
+            port = ports.front();
+            for (const auto& worker : workers) {
+                pumps.emplace_back([this, loop = worker->ctx.loop] {
+                    while (!stop.load()) h2o_evloop_run(loop, 5);
+                });
+            }
         }
 
         ~LiveWorker() {
             stop.store(true);
-            if (pump.joinable()) pump.join();
-            worker.reset();
+            for (auto& pump : pumps) pump.join();
+            workers.clear();
         }
     };
 
