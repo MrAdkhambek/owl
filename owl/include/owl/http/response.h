@@ -150,9 +150,9 @@ namespace owl {
 
     private:
         explicit Response(const int status, Body body) noexcept
-            : status_(status),
-              has_body_(std::holds_alternative<std::string>(body)),
-              body_(std::move(body)) {
+            : body_(std::move(body)),
+              status_(status),
+              has_body_(std::holds_alternative<std::string>(body)) {
         }
 
         void add_token_header(const h2o_token_t* const token, const std::string_view value) {

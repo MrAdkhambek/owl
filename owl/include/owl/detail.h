@@ -85,7 +85,7 @@ namespace owl::detail {
         const MiddlewareChain<S>* const server_layers,
         const Context<S>* const context
     ) {
-        const Exchange exchange{};
+        constexpr Exchange exchange{};
         try {
             const Next<S> next{chains->splice(server_layers), handler, context};
             auto response = co_await next(*request);
@@ -98,8 +98,7 @@ namespace owl::detail {
                 exchange.matched(*request, status);
                 if (status == 426) {
                     // KEEP_HEADERS: the Sec-WebSocket-Version upgrade() staged is the answer.
-                    h2o_send_error_generic(request->raw(), 426, "Upgrade Required", "Upgrade Required",
-                                           H2O_SEND_ERROR_KEEP_HEADERS);
+                    h2o_send_error_generic(request->raw(), 426, "Upgrade Required", "Upgrade Required", H2O_SEND_ERROR_KEEP_HEADERS);
                 } else if (status != 101) {
                     send_error_floor(request->raw(), status);
                 }
