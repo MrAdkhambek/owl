@@ -31,7 +31,7 @@ namespace owl::detail {
         // before this object, owned by the Response, is gone.
         [[nodiscard]] coro::task<void> make(ws::detail::Session* session) override {
             return std::apply([this, session](auto&&... arg) {
-                return handler(ws::Socket{session}, std::forward<decltype(arg)>(arg)...);
+                return handler(ws::Socket{session->handle}, std::forward<decltype(arg)>(arg)...);
             }, std::move(args));
         }
     };
@@ -59,7 +59,7 @@ namespace owl::detail {
         // `const T&` extractor into a copy of the Context member it binds.
         [[nodiscard]] coro::task<void> make(ws::detail::Session* session) override {
             return std::apply([this, session](auto&&... arg) {
-                return ws::detail::controller_loop<C, Args...>(ws::Socket{session}, instance, std::forward<decltype(arg)>(arg)...);
+                return ws::detail::controller_loop<C, Args...>(ws::Socket{session->handle}, instance, std::forward<decltype(arg)>(arg)...);
             }, std::move(args));
         }
     };

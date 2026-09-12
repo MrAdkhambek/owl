@@ -94,7 +94,7 @@ namespace owl::detail {
                 const auto upgrade = std::move(response).stage_upgrade(request->raw());
                 ws::detail::adopt(session.get(), upgrade->make(session.get()));
                 // upgrade() owns the session either way: it deletes it on failure.
-                const int status = ws::detail::upgrade(*request, session.release());
+                const int status = ws::detail::upgrade(*request, session.release(), &context->ws_hop);
                 exchange.matched(*request, status);
                 if (status == 426) {
                     // KEEP_HEADERS: the Sec-WebSocket-Version upgrade() staged is the answer.
@@ -170,6 +170,7 @@ namespace owl::detail {
         // post() safe from the pool threads.
         auto* const context = new Context<S>{dispatcher->state, ctx->loop};
         h2o_multithread_register_receiver(ctx->queue, &context->hop, &on_loop_hop);
+        h2o_multithread_register_receiver(ctx->queue, &context->ws_hop, &ws::detail::on_post);
 
         // Each driver holds a handle to a member of this Context, so
         // they are built now rather than with it; how is drivers.h's.
@@ -192,6 +193,7 @@ namespace owl::detail {
         // The receiver is linked into this context's queue; unlink it before
         // the Context that owns it dies.
         h2o_multithread_unregister_receiver(ctx->queue, &context->hop);
+        h2o_multithread_unregister_receiver(ctx->queue, &context->ws_hop);
         delete context;
     }
 

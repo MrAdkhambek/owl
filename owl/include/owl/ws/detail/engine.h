@@ -34,8 +34,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 
 #include <h2o.h>
@@ -62,6 +64,13 @@ namespace owl::ws::detail {
             session->batch[i] = {};
         }
         session->batched = 0;
+    }
+
+    // Every place the connection stops delivering, so Socket::open() on any
+    // thread agrees with the owner.
+    inline void mark_closing(Session* session) noexcept {
+        session->closing = true;
+        session->handle->open.store(false, std::memory_order_relaxed);
     }
 
     inline void wake(Session* session) noexcept;
@@ -177,7 +186,7 @@ namespace owl::ws::detail {
         if (session->sock == nullptr || session->dead || h2o_socket_is_writing(session->sock)) return;
         auto* const ctx = ctx_of(session);
         if (wslay_event_want_write(ctx) && wslay_event_send(ctx) != 0) {
-            session->closing = true;
+            mark_closing(session);
             kick(session);
             return;
         }
@@ -223,7 +232,7 @@ namespace owl::ws::detail {
             }
         }
         if (close) {
-            session->closing = true;
+            mark_closing(session);
             h2o_socket_read_stop(session->sock);
         }
         if (!session->pending.empty() || session->closing) {
@@ -234,7 +243,7 @@ namespace owl::ws::detail {
     inline void on_recv(h2o_socket_t* sock, const char* err) {
         auto* const session = static_cast<Session*>(sock->data);
         if (err != nullptr) {
-            session->closing = true;
+            mark_closing(session);
             session->dead = true;
             h2o_socket_read_stop(sock);
             wake(session);
@@ -248,7 +257,7 @@ namespace owl::ws::detail {
         auto* const session = static_cast<Session*>(sock->data);
         free_batch(session);
         if (err != nullptr) {
-            session->closing = true;
+            mark_closing(session);
             session->dead = true;
             wake(session);
         } else {
@@ -274,7 +283,7 @@ namespace owl::ws::detail {
         session->finished = true;
         if (session->sock != nullptr && !session->closing) {
             wslay_event_queue_close(ctx_of(session), code, nullptr, 0);
-            session->closing = true;
+            mark_closing(session);
         }
         if (session->sock != nullptr) proceed(session);
         maybe_reap(session);
@@ -295,7 +304,7 @@ namespace owl::ws::detail {
             data.size(),
         };
         if (wslay_event_queue_msg(ctx_of(session), &message) != 0) {
-            session->closing = true;
+            mark_closing(session);
             kick(session);
             return;
         }
@@ -304,18 +313,77 @@ namespace owl::ws::detail {
 
     inline void close_here(Session* session) noexcept {
         if (session->closing) return;
-        session->closing = true;
+        mark_closing(session);
         wslay_event_queue_close(ctx_of(session), WSLAY_CODE_NORMAL_CLOSURE, nullptr, 0);
         flush(session);
         kick(session);
     }
 
-    inline void engine_enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
-        enqueue_here(session, std::move(data), opcode);
+    struct Post;
+
+    // Standard-layout, so the receiver can walk back from the list node with
+    // H2O_STRUCT_FROM_MEMBER. Post holds a std::string and need not be.
+    struct PostHook final {
+        h2o_multithread_message_t message{};
+        Post* post = nullptr;
+    };
+
+    // A send or close from a thread that does not own the connection,
+    // carried to the thread that does. It holds a reference, so the Handle
+    // survives the trip even when the connection does not.
+    struct Post final {
+        PostHook hook;
+        Handle* handle = nullptr;
+        std::string data;
+        Opcode opcode = Opcode::Text;
+        bool close = false;
+    };
+
+    // The owner worker's receiver; detail.h registers it per Context.
+    inline void on_post(h2o_multithread_receiver_t*, h2o_linklist_t* const messages) {
+        while (!h2o_linklist_is_empty(messages)) {
+            auto* const hook = H2O_STRUCT_FROM_MEMBER(PostHook, message.link, messages->next);
+            const std::unique_ptr<Post> post{hook->post};
+            h2o_linklist_unlink(&hook->message.link);
+            if (Session* const session = post->handle->session) {
+                if (post->close) {
+                    close_here(session);
+                } else {
+                    enqueue_here(session, std::move(post->data), post->opcode);
+                }
+            }
+            release(post->handle);
+        }
     }
 
-    inline void engine_close(Session* session) noexcept {
-        close_here(session);
+    [[nodiscard]] inline bool on_owner(const Handle* handle) noexcept {
+        return std::this_thread::get_id() == handle->owner;
+    }
+
+    // open is only a cheap early out; the owner checks the session again on
+    // delivery, which is the check that counts.
+    inline void post_to_owner(Handle* handle, std::string data, const Opcode opcode, const bool close) noexcept {
+        if (!handle->open.load(std::memory_order_relaxed)) return;
+        retain(handle);
+        auto* const post = new Post{.hook = {}, .handle = handle, .data = std::move(data), .opcode = opcode, .close = close};
+        post->hook.post = post;
+        h2o_multithread_send_message(handle->hop, &post->hook.message);
+    }
+
+    inline void engine_enqueue(Handle* handle, std::string data, const Opcode opcode) noexcept {
+        if (!on_owner(handle)) {
+            post_to_owner(handle, std::move(data), opcode, false);
+            return;
+        }
+        if (Session* const session = handle->session) enqueue_here(session, std::move(data), opcode);
+    }
+
+    inline void engine_close(Handle* handle) noexcept {
+        if (!on_owner(handle)) {
+            post_to_owner(handle, {}, Opcode::Text, true);
+            return;
+        }
+        if (Session* const session = handle->session) close_here(session);
     }
 
     inline constexpr SessionOps engine_ops{
@@ -332,6 +400,7 @@ namespace owl::ws::detail {
         session->sock = sock;
         sock->data = session;
         h2o_buffer_consume(&sock->input, reqsize);
+        session->handle->open.store(true, std::memory_order_relaxed);
         session->handler.start();
         proceed(session);
     }
@@ -364,7 +433,7 @@ namespace owl::ws::detail {
     // allocation and a query parse per upgrade. Still checks
     // wants_websocket: Response::websocket is public, and a plain GET route
     // may return one.
-    [[nodiscard]] inline int upgrade(Request& request, Session* session) noexcept {
+    [[nodiscard]] inline int upgrade(Request& request, Session* session, h2o_multithread_receiver_t* const hop) noexcept {
         h2o_req_t* const req = request.raw();
         if (!wants_websocket(request)) {
             delete session;
@@ -390,7 +459,10 @@ namespace owl::ws::detail {
         }
         wslay_event_config_set_max_recv_msg_length(ctx, max_message_bytes);
         session->wslay = ctx;
-        session->ops = &engine_ops;
+        Handle* const handle = session->handle;
+        handle->owner = std::this_thread::get_id();
+        handle->hop = hop;
+        handle->ops = &engine_ops;
         session->loop = req->conn->ctx->loop;
         h2o_timer_init(&session->reaper.timer, on_reap);
         session->reaper.session = session;

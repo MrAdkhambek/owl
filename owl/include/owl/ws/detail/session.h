@@ -8,11 +8,13 @@
 // ones that include the engine.
 
 #include <array>
+#include <atomic>
 #include <coroutine>
 #include <cstddef>
 #include <deque>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <h2o.h>
@@ -23,6 +25,7 @@
 
 namespace owl::ws::detail {
     struct Session;
+    struct Handle;
 
     // h2o_timer_t carries no user data, so a callback walks back from the
     // timer with H2O_STRUCT_FROM_MEMBER -- which needs a standard-layout
@@ -35,11 +38,53 @@ namespace owl::ws::detail {
     // What only the engine can do. Pointers rather than declarations, so a
     // translation unit that never includes the engine still links.
     struct SessionOps final {
-        void (*enqueue)(Session*, std::string, Opcode) noexcept;
-        void (*close)(Session*) noexcept;
+        void (*enqueue)(Handle*, std::string, Opcode) noexcept;
+        void (*close)(Handle*) noexcept;
     };
 
+    // What every Socket copy points at, and what outlives the Session. A
+    // Socket kept in a shared map after its connection ended stays safe to
+    // call -- send and close find no session and do nothing -- and its id()
+    // cannot be handed to a new connection while the old copy is alive,
+    // which a session address could.
+    //
+    // session is touched only on the owner thread. owner, hop and ops are
+    // set at upgrade, before the handler starts, so before any Socket can
+    // reach another thread. open is the one field any thread may read.
+    struct Handle final {
+        std::atomic<std::size_t> refs{1};           // the Session's, plus one per Socket
+        std::atomic<bool> open{false};              // what Socket::open() reports, on any thread
+        Session* session = nullptr;                 // null once the session is destroyed
+        std::thread::id owner{};                    // the worker thread running the session
+        h2o_multithread_receiver_t* hop = nullptr;  // that worker's WebSocket receiver
+        const SessionOps* ops = nullptr;            // null until upgrade()
+    };
+
+    inline void retain(Handle* handle) noexcept {
+        handle->refs.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    inline void release(Handle* handle) noexcept {
+        if (handle->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) delete handle;
+    }
+
     struct Session final {
+        // The Session's own reference is dropped first; the handler's frame,
+        // destroyed after this body as the first-declared member, drops the
+        // Socket copies it holds.
+        Session() {
+            handle->session = this;
+        }
+
+        ~Session() {
+            handle->session = nullptr;
+            handle->open.store(false, std::memory_order_relaxed);
+            release(handle);
+        }
+
+        Session(const Session&) = delete;
+        Session& operator=(const Session&) = delete;
+
         // The connection is this coroutine; see engine.h for how it ends.
         coro::task<void> handler;
         // Messages the handler has not taken yet. A queue rather than a slot:
@@ -47,8 +92,8 @@ namespace owl::ws::detail {
         // instead of interleaving.
         std::deque<Message> pending;
         std::coroutine_handle<> waiter;       // set while parked in recv()
+        Handle* const handle = new Handle;
 
-        const SessionOps* ops = nullptr;      // null until upgrade()
         h2o_loop_t* loop = nullptr;           // saved before the request dies
         h2o_socket_t* sock = nullptr;         // set in on_complete
         void* wslay = nullptr;                // wslay_event_context_ptr, opaque here
@@ -81,11 +126,11 @@ namespace owl::ws::detail {
         session->waiter = waiter;
     }
 
-    inline void enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
-        if (session->ops != nullptr) session->ops->enqueue(session, std::move(data), opcode);
+    inline void enqueue(Handle* handle, std::string data, const Opcode opcode) noexcept {
+        if (handle->ops != nullptr) handle->ops->enqueue(handle, std::move(data), opcode);
     }
 
-    inline void begin_close(Session* session) noexcept {
-        if (session->ops != nullptr) session->ops->close(session);
+    inline void begin_close(Handle* handle) noexcept {
+        if (handle->ops != nullptr) handle->ops->close(handle);
     }
 }

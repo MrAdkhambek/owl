@@ -66,6 +66,12 @@ namespace owl {
         // the worker up, below.
         h2o_multithread_receiver_t hop{};
 
+        // The worker's receiver for WebSocket sends and closes posted from
+        // other threads. mutable because it is h2o's to write into from any
+        // thread; handlers see the Context as const, and run_handler hands
+        // this to the engine through that const view.
+        mutable h2o_multithread_receiver_t ws_hop{};
+
 #ifdef OWL_ENABLE_POSTGRESQL
         // Null until on_context_init wires it, and null for good when the
         // builder never asked for the driver -- the extractor kicks 500. A

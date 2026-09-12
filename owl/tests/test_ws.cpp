@@ -8,6 +8,7 @@
 #include <format>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -592,4 +593,103 @@ TEST(Ws, ClosingAnotherConnectionDoesNotRunItsHandlerInline) {
     EXPECT_FALSE(kicker->nested.load());
     a.send_close();
     a.read_close_and_eof();
+}
+
+namespace {
+    struct Broadcast final {
+        std::mutex mu;
+        std::vector<owl::ws::Socket> peers;
+        std::atomic<int> joined{0};
+        std::atomic<int> left{0};
+
+        void on_connect(owl::ws::Socket sock) {
+            {
+                const std::lock_guard lock{mu};
+                peers.push_back(sock);
+            }
+            joined.fetch_add(1);
+        }
+
+        void on_message(owl::ws::Socket from, owl::ws::Message msg) {
+            std::vector<owl::ws::Socket> copy;
+            {
+                const std::lock_guard lock{mu};
+                copy = peers;
+            }
+            for (const auto& peer : copy) {
+                if (peer != from) (void)peer.send(std::string{msg.data()}, msg.opcode());
+            }
+        }
+
+        void on_disconnect(owl::ws::Socket sock) {
+            {
+                const std::lock_guard lock{mu};
+                std::erase(peers, sock);
+            }
+            left.fetch_add(1);
+        }
+    };
+
+    // Keeps the Socket past on_disconnect on purpose: the bug a controller
+    // with a missed erase has.
+    struct Keeper final {
+        std::mutex mu;
+        std::optional<owl::ws::Socket> kept;
+        std::atomic<bool> ended{false};
+
+        void on_connect(owl::ws::Socket sock) {
+            const std::lock_guard lock{mu};
+            kept.emplace(sock);
+        }
+
+        void on_message(owl::ws::Socket, owl::ws::Message) {}
+
+        void on_disconnect(owl::ws::Socket) {
+            ended.store(true);
+        }
+    };
+}
+
+TEST(Ws, BroadcastReachesAPeerOnAnotherWorker) {
+    const auto hub = std::make_shared<Broadcast>();
+    auto router = owl::Router<App>::make().ws<"/hub", Broadcast>(hub);
+    LiveWorker workers{router, 2};
+    Client a{workers.ports[0]};
+    Client b{workers.ports[1]};
+    EXPECT_EQ(a.handshake("/hub").status, 101);
+    EXPECT_EQ(b.handshake("/hub").status, 101);
+    ASSERT_TRUE(wait_for([&] { return hub->joined.load() == 2; }));
+    a.send_frame(0x1, "hi");
+    std::uint8_t opcode = 0;
+    std::string payload;
+    EXPECT_TRUE(b.read_frame(opcode, payload));
+    EXPECT_EQ(payload, "hi");
+    a.send_close();
+    a.read_close_and_eof();
+    b.send_close();
+    b.read_close_and_eof();
+    EXPECT_TRUE(wait_for([&] { return hub->left.load() == 2; }));
+}
+
+TEST(Ws, SocketKeptPastItsConnectionIsInert) {
+    const auto keeper = std::make_shared<Keeper>();
+    auto router = owl::Router<App>::make().ws<"/keep", Keeper>(keeper);
+    LiveWorker worker{router};
+    {
+        Client client{worker.port};
+        const auto hs = client.handshake("/keep");
+        EXPECT_EQ(hs.status, 101);
+        if (hs.status != 101) return;
+        client.send_close();
+        client.read_close_and_eof();
+    }
+    ASSERT_TRUE(wait_for([&] { return keeper->ended.load(); }));
+    // The session is reaped on the loop pass after the handler returns.
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const std::lock_guard lock{keeper->mu};
+    ASSERT_TRUE(keeper->kept.has_value());
+    EXPECT_FALSE(keeper->kept->open());
+    (void)keeper->kept->send("late");
+    keeper->kept->close();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
 }
