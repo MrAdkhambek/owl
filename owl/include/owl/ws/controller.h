@@ -38,6 +38,7 @@
 // same way sync-versus-async is.
 
 #include <concepts>
+#include <memory>
 #include <optional>
 #include <tuple>
 #include <type_traits>
@@ -131,8 +132,8 @@ namespace owl::ws::detail {
     }
 
     // One coroutine per connection, driving **one controller shared by all
-    // of them**. The instance is built once at registration and lives as
-    // long as the router; this only borrows it.
+    // of them**. The frame holds a shared_ptr to it, so a connection keeps
+    // its controller alive however long it outlives the route.
     //
     // Two consequences worth stating, because they are the whole difference
     // from a per-connection instance:
@@ -144,14 +145,16 @@ namespace owl::ws::detail {
     //   * With threads > 1 the instance is reached from every worker's loop
     //     at once, so it must be safe for concurrent use -- the same
     //     contract State<T> carries.
-    // The extractors arrive **by value**, so they live in this frame -- one
-    // frame per connection -- for as long as the connection does. That is the
+    // The extractors arrive **by value** -- except a `const T&`, which binds
+    // a Context member that outlives the connection -- so they live in this
+    // frame, one per connection, for as long as the connection does. That is the
     // whole trick: the request they came from is destroyed by the upgrade, and
     // the controller is shared, so this is the only storage with both the
     // right lifetime and the right multiplicity. They are passed as lvalues,
     // so a method may take them by value or by const reference.
     template <typename C, typename... Args>
-    coro::task<void> controller_loop(Socket sock, C& controller, Args... extracted) {
+    coro::task<void> controller_loop(Socket sock, std::shared_ptr<C> instance, Args... extracted) {
+        C& controller = *instance;
         if constexpr (HasOnConnect<C, Args...>) {
             co_await invoke([&] { return controller.on_connect(sock, extracted...); });
         } else if constexpr (HasOnConnect<C>) {

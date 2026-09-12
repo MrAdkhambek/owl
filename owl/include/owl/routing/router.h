@@ -183,7 +183,7 @@ namespace owl {
             if (!insert_ws(Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
                 auto args = extract_all<Args...>(ctx, req);
                 if (!args) [[unlikely]] co_return to_response(std::move(args).error());
-                co_return Response::websocket(std::make_shared<detail::WsRoute<Args...>>(handler, detail::to_ws_slots(*std::move(args))));
+                co_return Response::websocket(std::make_shared<detail::WsRoute<Args...>>(handler, *std::move(args)));
             })) {
                 throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
             }
@@ -383,7 +383,7 @@ namespace owl {
                 auto args = extract_all<Args...>(ctx, req);
                 if (!args) [[unlikely]] co_return to_response(std::move(args).error());
                 co_return Response::websocket(
-                    std::make_shared<detail::WsController<C, Args...>>(instance, detail::to_ws_slots(*std::move(args))));
+                    std::make_shared<detail::WsController<C, Args...>>(instance, *std::move(args)));
             })) {
                 throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
             }

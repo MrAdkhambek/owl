@@ -1,7 +1,9 @@
 #include <gtest/gtest.h>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 #include <h2o.h>
 
@@ -45,6 +47,25 @@ namespace {
         void on_message(owl::ws::Socket, owl::ws::Message) {}
         int n;
     };
+
+    struct Probe final {
+        void on_message(owl::ws::Socket, owl::ws::Message) {}
+    };
+}
+
+TEST(WsRoutes, ConnectionFrameOwnsTheController) {
+    auto session = std::make_unique<owl::ws::detail::Session>();
+    std::weak_ptr<Probe> weak;
+    std::optional<coro::task<void>> connection;
+    {
+        auto instance = std::make_shared<Probe>();
+        weak = instance;
+        const auto upgrade = std::make_shared<owl::detail::WsController<Probe>>(std::move(instance), std::tuple<>{});
+        connection.emplace(upgrade->make(session.get()));
+    }
+    EXPECT_FALSE(weak.expired());
+    connection.reset();
+    EXPECT_TRUE(weak.expired());
 }
 
 TEST(WsHandshake, DetectsUpgradeVersion13AndKey) {
