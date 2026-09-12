@@ -24,10 +24,10 @@
 namespace owl::ws::detail {
     struct Session;
 
-    // h2o_timer_t carries no user data, so the callback walks back from the
+    // h2o_timer_t carries no user data, so a callback walks back from the
     // timer with H2O_STRUCT_FROM_MEMBER -- which needs a standard-layout
     // struct, and Session (a deque, a task) is not one.
-    struct Reaper final {
+    struct SessionTimer final {
         h2o_timer_t timer{};
         Session* session = nullptr;
     };
@@ -54,11 +54,11 @@ namespace owl::ws::detail {
         void* wslay = nullptr;                // wslay_event_context_ptr, opaque here
         std::array<h2o_iovec_t, 4> batch{};   // writes in flight, owned until they complete
         std::size_t batched = 0;
-        Reaper reaper;
+        SessionTimer reaper;                  // destroys the session on the loop's next pass
+        SessionTimer kicker;                  // runs proceed() on the loop's next pass
 
         bool closing = false;                 // nothing more will be delivered
         bool dead = false;                    // the socket failed; nothing more can be written
-        bool proceeding = false;              // inside the engine's pump
         bool finished = false;                // the handler has returned
     };
 

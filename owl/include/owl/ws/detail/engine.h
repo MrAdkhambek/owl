@@ -123,6 +123,7 @@ namespace owl::ws::detail {
     }
 
     inline void destroy(Session* session) noexcept {
+        if (h2o_timer_is_linked(&session->kicker.timer)) h2o_timer_unlink(&session->kicker.timer);
         if (session->sock != nullptr) {
             h2o_socket_close(session->sock);
             session->sock = nullptr;
@@ -136,7 +137,7 @@ namespace owl::ws::detail {
     }
 
     inline void on_reap(h2o_timer_t* entry) {
-        destroy(H2O_STRUCT_FROM_MEMBER(Reaper, timer, entry)->session);
+        destroy(H2O_STRUCT_FROM_MEMBER(SessionTimer, timer, entry)->session);
     }
 
     inline void maybe_reap(Session* session) noexcept {
@@ -152,9 +153,41 @@ namespace owl::ws::detail {
         }
     }
 
+    // Everything that may resume this session's handler, deferred to the
+    // loop's next pass on the session's own timer, so it starts from the
+    // loop rather than inside whoever asked.
+    inline void on_kick(h2o_timer_t* entry) {
+        auto* const session = H2O_STRUCT_FROM_MEMBER(SessionTimer, timer, entry)->session;
+        if (session->sock != nullptr && !session->dead) {
+            proceed(session);
+        } else {
+            wake(session);
+        }
+        maybe_reap(session);
+    }
+
+    inline void kick(Session* session) noexcept {
+        if (!h2o_timer_is_linked(&session->kicker.timer)) h2o_timer_link(session->loop, 0, &session->kicker.timer);
+    }
+
+    // The write half of proceed() and nothing else: no read, no wake. So it
+    // is safe from inside any handler, including another connection's --
+    // which is exactly where a broadcast calls it.
+    inline void flush(Session* session) noexcept {
+        if (session->sock == nullptr || session->dead || h2o_socket_is_writing(session->sock)) return;
+        auto* const ctx = ctx_of(session);
+        if (wslay_event_want_write(ctx) && wslay_event_send(ctx) != 0) {
+            session->closing = true;
+            kick(session);
+            return;
+        }
+        if (session->batched > 0) {
+            h2o_socket_write(session->sock, session->batch.data(), session->batched, on_write_complete);
+        }
+    }
+
     inline void proceed(Session* session) noexcept {
         auto* const ctx = ctx_of(session);
-        session->proceeding = true;
         bool close = false;
         int handled = 0;
         do {
@@ -193,7 +226,6 @@ namespace owl::ws::detail {
             session->closing = true;
             h2o_socket_read_stop(session->sock);
         }
-        session->proceeding = false;
         if (!session->pending.empty() || session->closing) {
             wake(session);
         }
@@ -252,7 +284,10 @@ namespace owl::ws::detail {
         session->handler = supervise(session, std::move(handler));
     }
 
-    inline void engine_enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
+    // Owner thread only. A failed queue is out of memory or a close already
+    // queued; either way nothing more will be delivered, and a handler
+    // parked in recv() must hear that -- from its own kick, not from here.
+    inline void enqueue_here(Session* session, std::string data, const Opcode opcode) noexcept {
         if (session->closing || session->dead) return;
         const wslay_event_msg message{
             static_cast<uint8_t>(opcode == Opcode::Binary ? WSLAY_BINARY_FRAME : WSLAY_TEXT_FRAME),
@@ -261,16 +296,26 @@ namespace owl::ws::detail {
         };
         if (wslay_event_queue_msg(ctx_of(session), &message) != 0) {
             session->closing = true;
+            kick(session);
             return;
         }
-        if (session->sock != nullptr && !session->proceeding) proceed(session);
+        flush(session);
+    }
+
+    inline void close_here(Session* session) noexcept {
+        if (session->closing) return;
+        session->closing = true;
+        wslay_event_queue_close(ctx_of(session), WSLAY_CODE_NORMAL_CLOSURE, nullptr, 0);
+        flush(session);
+        kick(session);
+    }
+
+    inline void engine_enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
+        enqueue_here(session, std::move(data), opcode);
     }
 
     inline void engine_close(Session* session) noexcept {
-        if (session->closing) return;
-        session->closing = true;
-        wslay_event_queue_close(ctx_of(session), 1000, nullptr, 0);
-        if (session->sock != nullptr && !session->proceeding) proceed(session);
+        close_here(session);
     }
 
     inline constexpr SessionOps engine_ops{
@@ -349,6 +394,8 @@ namespace owl::ws::detail {
         session->loop = req->conn->ctx->loop;
         h2o_timer_init(&session->reaper.timer, on_reap);
         session->reaper.session = session;
+        h2o_timer_init(&session->kicker.timer, on_kick);
+        session->kicker.session = session;
 
         char* const accept_key = static_cast<char*>(h2o_mem_alloc_pool(&req->pool, char, 29));
         create_accept_key(accept_key, key->data());

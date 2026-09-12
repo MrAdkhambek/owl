@@ -7,6 +7,7 @@
 #include <cstring>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -524,4 +525,62 @@ TEST(Ws, MissingKeyIs400) {
     LiveWorker worker{router};
     Client client{worker.port};
     EXPECT_EQ(client.handshake("/echo", "").status, 400);
+}
+
+namespace {
+    struct Kicker final {
+        std::mutex mu;
+        std::vector<owl::ws::Socket> peers;
+        std::atomic<int> joined{0};
+        std::atomic<int> left{0};
+        std::atomic<bool> closing_others{false};
+        std::atomic<bool> nested{false};
+
+        void on_connect(owl::ws::Socket sock) {
+            {
+                const std::lock_guard lock{mu};
+                peers.push_back(sock);
+            }
+            joined.fetch_add(1);
+        }
+
+        void on_message(owl::ws::Socket from, owl::ws::Message) {
+            std::vector<owl::ws::Socket> copy;
+            {
+                const std::lock_guard lock{mu};
+                copy = peers;
+            }
+            closing_others.store(true);
+            for (const auto& peer : copy) {
+                if (peer != from) peer.close();
+            }
+            closing_others.store(false);
+        }
+
+        void on_disconnect(owl::ws::Socket sock) {
+            if (closing_others.load()) nested.store(true);
+            {
+                const std::lock_guard lock{mu};
+                std::erase(peers, sock);
+            }
+            left.fetch_add(1);
+        }
+    };
+}
+
+TEST(Ws, ClosingAnotherConnectionDoesNotRunItsHandlerInline) {
+    const auto kicker = std::make_shared<Kicker>();
+    auto router = owl::Router<App>::make().ws<"/kick", Kicker>(kicker);
+    LiveWorker worker{router};
+    Client a{worker.port};
+    Client b{worker.port};
+    EXPECT_EQ(a.handshake("/kick").status, 101);
+    EXPECT_EQ(b.handshake("/kick").status, 101);
+    ASSERT_TRUE(wait_for([&] { return kicker->joined.load() == 2; }));
+    a.send_frame(0x1, "kick");
+    b.read_close_and_eof();
+    EXPECT_TRUE(wait_for([&] { return kicker->left.load() == 1; }));
+    EXPECT_FALSE(kicker->nested.load());
+    a.send_close();
+    a.read_close_and_eof();
 }
