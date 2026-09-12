@@ -1,8 +1,9 @@
 #pragma once
 
-// Match only needs to know the request looks like a handshake so it can pick
-// the WS slot. Key validity and the accept key belong to `upgrade()`, which
-// still answers 400.
+// Which slot a GET takes: whether the client asked to become a WebSocket,
+// and nothing more. The version and the key are judged by upgrade(), which
+// can answer 426 or 400. Judging them here sent a version-8 client to the
+// GET handler or a 404, where it could not learn to retry with 13.
 //
 // Reading `req->upgrade` costs one pointer test on every GET. Scanning
 // headers would cost a full header scan instead.
@@ -13,15 +14,9 @@
 #include "owl/util/util.h"
 
 namespace owl::ws::detail {
-    [[nodiscard]] inline bool is_websocket_handshake(const Request& req) {
+    [[nodiscard]] inline bool wants_websocket(const Request& req) {
         const auto* const raw = req.raw();
-        if (raw->upgrade.base == nullptr || !util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket")) {
-            return false;
-        }
-        if (req.header("Sec-WebSocket-Version") != "13") {
-            return false;
-        }
-        const auto key = req.header("Sec-WebSocket-Key");
-        return key.has_value() && !key->empty();
+        return raw->upgrade.base != nullptr
+            && util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket");
     }
 }

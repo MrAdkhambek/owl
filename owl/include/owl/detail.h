@@ -93,10 +93,16 @@ namespace owl::detail {
                 auto session = std::make_unique<ws::detail::Session>();
                 const auto upgrade = std::move(response).stage_upgrade(request->raw());
                 ws::detail::adopt(session.get(), upgrade->make(session.get()));
-                // upgrade() owns the session either way: it deletes it on false.
-                const bool upgraded = ws::detail::upgrade(request->raw(), session.release());
-                exchange.matched(*request, upgraded ? 101 : 400);
-                if (!upgraded) send_error_floor(request->raw(), 400);
+                // upgrade() owns the session either way: it deletes it on failure.
+                const int status = ws::detail::upgrade(*request, session.release());
+                exchange.matched(*request, status);
+                if (status == 426) {
+                    // KEEP_HEADERS: the Sec-WebSocket-Version upgrade() staged is the answer.
+                    h2o_send_error_generic(request->raw(), 426, "Upgrade Required", "Upgrade Required",
+                                           H2O_SEND_ERROR_KEEP_HEADERS);
+                } else if (status != 101) {
+                    send_error_floor(request->raw(), status);
+                }
                 // Upgraded: the request is h2o's now. The 101's write completes on a
                 // later loop pass -- evloop defers write callbacks through its pending
                 // list -- so this frame returns before the pool, and the Job holding

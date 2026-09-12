@@ -159,7 +159,7 @@ auto router = owl::Router<AppState>::make()
 
 ## WebSocket
 
-A path takes a send/recv coroutine or a shared controller. Extractors run before the upgrade — the request is gone at 101 — so they must own their values (`Path<"n", std::string>`, not `PathView`). `const T&` is allowed only for driver and loop refs, which outlive the connection on their worker. `owl::get` and `.ws` may share a pattern; a GET without Upgrade on a WS-only path is 404. One controller instance is built at registration and reached from every worker, so it must be safe for concurrent use, the same contract `State<T>` carries. `send` is awaitable so it can gain backpressure later; it does not have it yet.
+A path takes a send/recv coroutine or a shared controller. Extractors run before the upgrade — the request is gone at 101 — so they must own their values (`Path<"n", std::string>`, not `PathView`). `const T&` is allowed only for driver and loop refs, which outlive the connection on their worker. `owl::get` and `.ws` may share a pattern; a GET without Upgrade on a WS-only path is 404. A handshake that offers a version other than 13 gets 426 with `Sec-WebSocket-Version: 13`; a missing or malformed key gets 400. One controller instance is built at registration and reached from every worker, so it must be safe for concurrent use, the same contract `State<T>` carries. `send` is awaitable so it can gain backpressure later; it does not have it yet.
 
 A working echo, rooms, and chat page is [`examples/ws`](../examples/ws/README.md).
 

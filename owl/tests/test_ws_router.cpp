@@ -68,7 +68,7 @@ TEST(WsRoutes, ConnectionFrameOwnsTheController) {
     EXPECT_TRUE(weak.expired());
 }
 
-TEST(WsHandshake, DetectsUpgradeVersion13AndKey) {
+TEST(WsHandshake, WantsWebsocketOnTheUpgradeToken) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
@@ -77,12 +77,12 @@ TEST(WsHandshake, DetectsUpgradeVersion13AndKey) {
     add_header(req, "sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
     {
         const auto* const request = owl::Request::make(&req);
-        EXPECT_TRUE(owl::ws::detail::is_websocket_handshake(*request));
+        EXPECT_TRUE(owl::ws::detail::wants_websocket(*request));
     }
     h2o_mem_clear_pool(&req.pool);
 }
 
-TEST(WsHandshake, RejectsMissingKey) {
+TEST(WsHandshake, MissingKeyStillWantsWebsocket) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
@@ -90,12 +90,12 @@ TEST(WsHandshake, RejectsMissingKey) {
     add_header(req, "sec-websocket-version", "13");
     {
         const auto* const request = owl::Request::make(&req);
-        EXPECT_FALSE(owl::ws::detail::is_websocket_handshake(*request));
+        EXPECT_TRUE(owl::ws::detail::wants_websocket(*request));
     }
     h2o_mem_clear_pool(&req.pool);
 }
 
-TEST(WsHandshake, RejectsVersion8) {
+TEST(WsHandshake, Version8StillWantsWebsocket) {
     h2o_req_t req{};
     h2o_mem_init_pool(&req.pool);
     req.query_at = SIZE_MAX;
@@ -104,7 +104,7 @@ TEST(WsHandshake, RejectsVersion8) {
     add_header(req, "sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
     {
         const auto* const request = owl::Request::make(&req);
-        EXPECT_FALSE(owl::ws::detail::is_websocket_handshake(*request));
+        EXPECT_TRUE(owl::ws::detail::wants_websocket(*request));
     }
     h2o_mem_clear_pool(&req.pool);
 }
@@ -115,7 +115,7 @@ TEST(WsHandshake, RejectsPlainGet) {
     req.query_at = SIZE_MAX;
     {
         const auto* const request = owl::Request::make(&req);
-        EXPECT_FALSE(owl::ws::detail::is_websocket_handshake(*request));
+        EXPECT_FALSE(owl::ws::detail::wants_websocket(*request));
     }
     h2o_mem_clear_pool(&req.pool);
 }
@@ -131,8 +131,25 @@ TEST(WsHandshake, UpgradeHeaderAloneIsNotEnough) {
     add_header(req, "sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ==");
     {
         const auto* const request = owl::Request::make(&req);
-        EXPECT_FALSE(owl::ws::detail::is_websocket_handshake(*request));
+        EXPECT_FALSE(owl::ws::detail::wants_websocket(*request));
     }
+    h2o_mem_clear_pool(&req.pool);
+}
+
+TEST(WsRouter, AnyVersionTakesTheWsSlot) {
+    auto router = owl::Router<App>::make()
+        .route<"/chat">(owl::get(page))
+        .ws<"/chat">(chat);
+    h2o_req_t req{};
+    h2o_mem_init_pool(&req.pool);
+    req.query_at = SIZE_MAX;
+    auto* request = owl::Request::make(&req);
+    const auto* const get_handler = router.match(owl::Method::Get, "/chat", *request);
+    set_upgrade(req);
+    add_header(req, "sec-websocket-version", "8");
+    const auto* const ws_handler = router.match(owl::Method::Get, "/chat", *request);
+    ASSERT_NE(ws_handler, nullptr);
+    EXPECT_NE(ws_handler, get_handler);
     h2o_mem_clear_pool(&req.pool);
 }
 

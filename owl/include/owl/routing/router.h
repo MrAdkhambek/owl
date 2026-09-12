@@ -266,7 +266,7 @@ namespace owl {
             std::array<PathParam, max_path_params> captures{};
             std::size_t captured = 0;
             std::string_view route{};
-            const bool websocket = method == Method::Get && ws::detail::is_websocket_handshake(req);
+            const bool websocket = method == Method::Get && ws::detail::wants_websocket(req);
             const Handler<S>* handler = detail::descend(
                 root_,
                 segments.data(),

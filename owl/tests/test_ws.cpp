@@ -193,16 +193,18 @@ namespace {
             return out;
         }
 
-        Http handshake(const std::string_view path, const std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==") {
-            send_all(std::format(
+        // An empty key leaves the header out.
+        Http handshake(const std::string_view path, const std::string_view key = "dGhlIHNhbXBsZSBub25jZQ==",
+                       const std::string_view version = "13") {
+            std::string head = std::format(
                 "GET {} HTTP/1.1\r\n"
                 "Host: 127.0.0.1\r\n"
                 "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                "Sec-WebSocket-Key: {}\r\n"
-                "Sec-WebSocket-Version: 13\r\n"
-                "\r\n",
-                path, key));
+                "Connection: Upgrade\r\n",
+                path);
+            if (!key.empty()) head += std::format("Sec-WebSocket-Key: {}\r\n", key);
+            head += std::format("Sec-WebSocket-Version: {}\r\n\r\n", version);
+            send_all(head);
             return read_http();
         }
 
@@ -506,4 +508,20 @@ TEST(Ws, ThrowingHandlerClosesWith1011) {
     if (hs.status != 101) return;
     client.send_frame(0x1, "hi");
     EXPECT_EQ(client.read_close_code(), 1011);
+}
+
+TEST(Ws, OtherVersionIs426WithVersion13) {
+    auto router = owl::Router<App>::make().ws<"/echo">(echo);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    const auto hs = client.handshake("/echo", "dGhlIHNhbXBsZSBub25jZQ==", "8");
+    EXPECT_EQ(hs.status, 426);
+    EXPECT_EQ(hs.header("sec-websocket-version"), "13");
+}
+
+TEST(Ws, MissingKeyIs400) {
+    auto router = owl::Router<App>::make().ws<"/echo">(echo);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    EXPECT_EQ(client.handshake("/echo", "").status, 400);
 }

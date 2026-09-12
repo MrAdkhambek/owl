@@ -313,23 +313,42 @@ namespace owl::ws::detail {
         dst[28] = '\0';
     }
 
-    [[nodiscard]] inline bool upgrade(h2o_req_t* req, Session* session) noexcept {
-        const auto* const request = Request::make(req);
-        const auto key = request->header("Sec-WebSocket-Key");
-        if (!is_websocket_handshake(*request) || !key.has_value() || !valid_key(req, *key)) {
+    // Returns the status the exchange ended with: 101 once h2o owns the
+    // connection, otherwise the error run_handler sends. Takes the Request
+    // run_handler already has -- building a second one cost a pool
+    // allocation and a query parse per upgrade. Still checks
+    // wants_websocket: Response::websocket is public, and a plain GET route
+    // may return one.
+    [[nodiscard]] inline int upgrade(Request& request, Session* session) noexcept {
+        h2o_req_t* const req = request.raw();
+        if (!wants_websocket(request)) {
             delete session;
-            return false;
+            return 400;
+        }
+        if (request.header("Sec-WebSocket-Version") != "13") {
+            delete session;
+            // RFC 6455 4.4: name the version this server speaks.
+            h2o_add_header_by_str(&req->pool, &req->res.headers, H2O_STRLIT("sec-websocket-version"), 0, nullptr,
+                                  H2O_STRLIT("13"));
+            return 426;
+        }
+        const auto key = request.header("Sec-WebSocket-Key");
+        if (!key.has_value() || !valid_key(req, *key)) {
+            delete session;
+            return 400;
         }
 
-        session->loop = req->conn->ctx->loop;
-        h2o_timer_init(&session->reaper.timer, on_reap);
-        session->reaper.session = session;
-
         wslay_event_context_ptr ctx = nullptr;
-        wslay_event_context_server_init(&ctx, &wslay_callbacks, session);
+        if (wslay_event_context_server_init(&ctx, &wslay_callbacks, session) != 0) {
+            delete session;
+            return 500;
+        }
         wslay_event_config_set_max_recv_msg_length(ctx, max_message_bytes);
         session->wslay = ctx;
         session->ops = &engine_ops;
+        session->loop = req->conn->ctx->loop;
+        h2o_timer_init(&session->reaper.timer, on_reap);
+        session->reaper.session = session;
 
         char* const accept_key = static_cast<char*>(h2o_mem_alloc_pool(&req->pool, char, 29));
         create_accept_key(accept_key, key->data());
@@ -341,6 +360,6 @@ namespace owl::ws::detail {
                               accept_key, std::strlen(accept_key));
 
         h2o_http1_upgrade(req, nullptr, 0, on_complete, session);
-        return true;
+        return 101;
     }
 }
