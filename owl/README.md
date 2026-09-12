@@ -191,6 +191,8 @@ using Extractors = std::tuple<owl::Path<"room", std::string>, owl::Header<"autho
 
 Absent means none. Each method may take the pack or skip it (`on_disconnect` often skips). The values live in the per-connection frame, never on the shared instance — a member would race the next handshake.
 
+`on_disconnect` runs for every connection whose `on_connect` started, even when a method threw; the exception is then rethrown, and the connection closes with 1011. A coroutine handler that throws closes with 1011 too.
+
 ## Prometheus
 
 See [`prometheus/README.md`](../prometheus/README.md). Build with `-DOWL_ENABLE_PROMETHEUS=ON`: `owl::owl` then depends on `owl::prometheus` (which itself pulls nothing), and the server records HTTP RED itself — every exchange through dispatch under its route pattern, thrown handlers as `500`, and unmatched requests (`404`/`405`, dispatch failures) counted without a duration. Your handler only serves `owl::prometheus::dump()` as `text/plain; version=0.0.4; charset=utf-8`.

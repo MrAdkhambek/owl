@@ -70,7 +70,7 @@ namespace owl::ws::detail {
     inline void destroy(Session* session) noexcept;
     inline void on_recv(h2o_socket_t* sock, const char* err);
     inline void on_write_complete(h2o_socket_t* sock, const char* err);
-    inline void finish(Session* session) noexcept;
+    inline void finish(Session* session, std::uint16_t code) noexcept;
 
     inline ssize_t recv_callback(wslay_event_context_ptr ctx, uint8_t* buf, size_t len, int, void* user_data) {
         auto* const session = static_cast<Session*>(user_data);
@@ -225,18 +225,23 @@ namespace owl::ws::detail {
         maybe_reap(session);
     }
 
+    // The handler is the connection, so its failure is the connection's:
+    // 1011 tells the peer this was not a normal close. Nothing is logged --
+    // owl's library code has no logger -- so the close code is the signal.
     inline coro::task<void> supervise(Session* session, coro::task<void> inner) {
+        std::uint16_t code = WSLAY_CODE_NORMAL_CLOSURE;
         try {
             co_await std::move(inner);
         } catch (...) {
+            code = WSLAY_CODE_INTERNAL_SERVER_ERROR;
         }
-        finish(session);
+        finish(session, code);
     }
 
-    inline void finish(Session* session) noexcept {
+    inline void finish(Session* session, const std::uint16_t code) noexcept {
         session->finished = true;
         if (session->sock != nullptr && !session->closing) {
-            wslay_event_queue_close(ctx_of(session), 1000, nullptr, 0);
+            wslay_event_queue_close(ctx_of(session), code, nullptr, 0);
             session->closing = true;
         }
         if (session->sock != nullptr) proceed(session);

@@ -38,6 +38,7 @@
 // same way sync-versus-async is.
 
 #include <concepts>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <tuple>
@@ -152,23 +153,35 @@ namespace owl::ws::detail {
     // the controller is shared, so this is the only storage with both the
     // right lifetime and the right multiplicity. They are passed as lvalues,
     // so a method may take them by value or by const reference.
+    //
+    // on_disconnect runs for every connection whose on_connect was entered,
+    // including one where on_connect or on_message threw. A controller that
+    // keys state on the Socket in on_connect would otherwise keep it after
+    // the connection is gone. co_await is not allowed in a handler, so the
+    // exception is parked, on_disconnect runs, and then it is rethrown for
+    // the engine to close the connection with 1011.
     template <typename C, typename... Args>
     coro::task<void> controller_loop(Socket sock, std::shared_ptr<C> instance, Args... extracted) {
         C& controller = *instance;
-        if constexpr (HasOnConnect<C, Args...>) {
-            co_await invoke([&] { return controller.on_connect(sock, extracted...); });
-        } else if constexpr (HasOnConnect<C>) {
-            co_await invoke([&] { return controller.on_connect(sock); });
-        }
-
-        while (std::optional<Message> message = co_await sock.recv()) {
-            if constexpr (HasOnMessage<C, Args...>) {
-                co_await invoke([&] {
-                    return controller.on_message(sock, std::move(*message), extracted...);
-                });
-            } else {
-                co_await invoke([&] { return controller.on_message(sock, std::move(*message)); });
+        std::exception_ptr failure;
+        try {
+            if constexpr (HasOnConnect<C, Args...>) {
+                co_await invoke([&] { return controller.on_connect(sock, extracted...); });
+            } else if constexpr (HasOnConnect<C>) {
+                co_await invoke([&] { return controller.on_connect(sock); });
             }
+
+            while (std::optional<Message> message = co_await sock.recv()) {
+                if constexpr (HasOnMessage<C, Args...>) {
+                    co_await invoke([&] {
+                        return controller.on_message(sock, std::move(*message), extracted...);
+                    });
+                } else {
+                    co_await invoke([&] { return controller.on_message(sock, std::move(*message)); });
+                }
+            }
+        } catch (...) {
+            failure = std::current_exception();
         }
 
         if constexpr (HasOnDisconnect<C, Args...>) {
@@ -176,5 +189,7 @@ namespace owl::ws::detail {
         } else if constexpr (HasOnDisconnect<C>) {
             co_await invoke([&] { return controller.on_disconnect(sock); });
         }
+
+        if (failure) std::rethrow_exception(failure);
     }
 }

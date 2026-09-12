@@ -273,6 +273,18 @@ namespace {
                 }
             }
         }
+
+        // The close frame's status code, then EOF; 0 if no close frame came.
+        [[nodiscard]] std::uint16_t read_close_code() {
+            std::uint8_t opcode = 0;
+            std::string payload;
+            if (!read_frame(opcode, payload) || opcode != 0x8 || payload.size() < 2) return 0;
+            for (;;) {
+                char tmp[64];
+                if (::recv(fd, tmp, sizeof(tmp), 0) <= 0) break;
+            }
+            return static_cast<std::uint16_t>((static_cast<unsigned char>(payload[0]) << 8) | static_cast<unsigned char>(payload[1]));
+        }
     };
 
     coro::task<void> echo(owl::ws::Socket sock) {
@@ -435,4 +447,63 @@ TEST(Ws, SharedControllerEchoesAcrossTwoConnections) {
         client.read_close_and_eof();
     }
     EXPECT_EQ(echo->connections.load(), 2);
+}
+
+namespace {
+    template <typename Pred>
+    bool wait_for(Pred pred, const std::chrono::milliseconds limit = std::chrono::seconds(5)) {
+        const auto deadline = std::chrono::steady_clock::now() + limit;
+        while (!pred()) {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        return true;
+    }
+
+    struct Faulty final {
+        std::atomic<int> connected{0};
+        std::atomic<int> disconnected{0};
+
+        void on_connect(owl::ws::Socket) {
+            connected.fetch_add(1);
+        }
+
+        void on_message(owl::ws::Socket, owl::ws::Message) {
+            throw std::runtime_error("boom");
+        }
+
+        void on_disconnect(owl::ws::Socket) {
+            disconnected.fetch_add(1);
+        }
+    };
+
+    coro::task<void> boom(owl::ws::Socket sock) {
+        (void)co_await sock.recv();
+        throw std::runtime_error("boom");
+    }
+}
+
+TEST(Ws, ThrowingControllerStillDisconnects) {
+    const auto faulty = std::make_shared<Faulty>();
+    auto router = owl::Router<App>::make().ws<"/faulty", Faulty>(faulty);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    const auto hs = client.handshake("/faulty");
+    EXPECT_EQ(hs.status, 101);
+    if (hs.status != 101) return;
+    client.send_frame(0x1, "hi");
+    EXPECT_EQ(client.read_close_code(), 1011);
+    EXPECT_TRUE(wait_for([&] { return faulty->disconnected.load() == 1; }));
+    EXPECT_EQ(faulty->connected.load(), 1);
+}
+
+TEST(Ws, ThrowingHandlerClosesWith1011) {
+    auto router = owl::Router<App>::make().ws<"/boom">(boom);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    const auto hs = client.handshake("/boom");
+    EXPECT_EQ(hs.status, 101);
+    if (hs.status != 101) return;
+    client.send_frame(0x1, "hi");
+    EXPECT_EQ(client.read_close_code(), 1011);
 }
