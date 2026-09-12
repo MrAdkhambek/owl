@@ -25,6 +25,10 @@
 // The only header that sees wslay. Public owl/ws/*.h stay wslay-free, and
 // the h2o request is gone once the upgrade completes -- nothing the
 // connection needs may live in that frame.
+//
+// Everything here is inline, not static: upgrade() and adopt() are inline,
+// and an inline function that names a static one is an ODR violation in
+// every translation unit after the first.
 
 #include <cstddef>
 #include <cstdint>
@@ -45,14 +49,14 @@
 #include "owl/ws/detail/session.h"
 
 namespace owl::ws::detail {
-    constexpr std::size_t max_message_bytes = 16 * 1024 * 1024;
-    constexpr char ws_guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    inline constexpr std::size_t max_message_bytes = 16 * 1024 * 1024;
+    inline constexpr char ws_guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
-    [[nodiscard]] static wslay_event_context_ptr ctx_of(const Session* session) noexcept {
+    [[nodiscard]] inline wslay_event_context_ptr ctx_of(const Session* session) noexcept {
         return static_cast<wslay_event_context_ptr>(session->wslay);
     }
 
-    static void free_batch(Session* session) noexcept {
+    inline void free_batch(Session* session) noexcept {
         for (std::size_t i = 0; i < session->batched; ++i) {
             std::free(session->batch[i].base);
             session->batch[i] = {};
@@ -60,15 +64,15 @@ namespace owl::ws::detail {
         session->batched = 0;
     }
 
-    static void wake(Session* session) noexcept;
-    static void proceed(Session* session) noexcept;
-    static void maybe_reap(Session* session) noexcept;
-    static void destroy(Session* session) noexcept;
-    static void on_recv(h2o_socket_t* sock, const char* err);
-    static void on_write_complete(h2o_socket_t* sock, const char* err);
-    static void finish(Session* session) noexcept;
+    inline void wake(Session* session) noexcept;
+    inline void proceed(Session* session) noexcept;
+    inline void maybe_reap(Session* session) noexcept;
+    inline void destroy(Session* session) noexcept;
+    inline void on_recv(h2o_socket_t* sock, const char* err);
+    inline void on_write_complete(h2o_socket_t* sock, const char* err);
+    inline void finish(Session* session) noexcept;
 
-    static ssize_t recv_callback(wslay_event_context_ptr ctx, uint8_t* buf, size_t len, int, void* user_data) {
+    inline ssize_t recv_callback(wslay_event_context_ptr ctx, uint8_t* buf, size_t len, int, void* user_data) {
         auto* const session = static_cast<Session*>(user_data);
         if (session->sock->input->size == 0) {
             wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
@@ -80,7 +84,7 @@ namespace owl::ws::detail {
         return static_cast<ssize_t>(len);
     }
 
-    static ssize_t send_callback(wslay_event_context_ptr ctx, const uint8_t* data, size_t len, int, void* user_data) {
+    inline ssize_t send_callback(wslay_event_context_ptr ctx, const uint8_t* data, size_t len, int, void* user_data) {
         auto* const session = static_cast<Session*>(user_data);
         if (h2o_socket_is_writing(session->sock) || session->batched == session->batch.size()) {
             wslay_event_set_error(ctx, WSLAY_ERR_WOULDBLOCK);
@@ -94,7 +98,7 @@ namespace owl::ws::detail {
         return static_cast<ssize_t>(len);
     }
 
-    static void on_msg_recv(wslay_event_context_ptr, const struct wslay_event_on_msg_recv_arg* arg, void* user_data) {
+    inline void on_msg_recv(wslay_event_context_ptr, const struct wslay_event_on_msg_recv_arg* arg, void* user_data) {
         if (arg->opcode != WSLAY_TEXT_FRAME && arg->opcode != WSLAY_BINARY_FRAME) return;
         auto* const session = static_cast<Session*>(user_data);
         session->pending.emplace_back(
@@ -102,7 +106,7 @@ namespace owl::ws::detail {
             arg->opcode == WSLAY_BINARY_FRAME ? Opcode::Binary : Opcode::Text);
     }
 
-    static const wslay_event_callbacks wslay_callbacks{
+    inline constexpr wslay_event_callbacks wslay_callbacks{
         .recv_callback = recv_callback,
         .send_callback = send_callback,
         .genmask_callback = nullptr,
@@ -112,13 +116,13 @@ namespace owl::ws::detail {
         .on_msg_recv_callback = on_msg_recv,
     };
 
-    static void wake(Session* session) noexcept {
+    inline void wake(Session* session) noexcept {
         if (const auto waiter = std::exchange(session->waiter, {})) {
             waiter.resume();
         }
     }
 
-    static void destroy(Session* session) noexcept {
+    inline void destroy(Session* session) noexcept {
         if (session->sock != nullptr) {
             h2o_socket_close(session->sock);
             session->sock = nullptr;
@@ -131,11 +135,11 @@ namespace owl::ws::detail {
         delete session;
     }
 
-    static void on_reap(h2o_timer_t* entry) {
+    inline void on_reap(h2o_timer_t* entry) {
         destroy(H2O_STRUCT_FROM_MEMBER(Reaper, timer, entry)->session);
     }
 
-    static void maybe_reap(Session* session) noexcept {
+    inline void maybe_reap(Session* session) noexcept {
         if (!session->finished) return;
         const bool idle = session->dead
             || session->sock == nullptr
@@ -148,7 +152,7 @@ namespace owl::ws::detail {
         }
     }
 
-    static void proceed(Session* session) noexcept {
+    inline void proceed(Session* session) noexcept {
         auto* const ctx = ctx_of(session);
         session->proceeding = true;
         bool close = false;
@@ -195,7 +199,7 @@ namespace owl::ws::detail {
         }
     }
 
-    static void on_recv(h2o_socket_t* sock, const char* err) {
+    inline void on_recv(h2o_socket_t* sock, const char* err) {
         auto* const session = static_cast<Session*>(sock->data);
         if (err != nullptr) {
             session->closing = true;
@@ -208,7 +212,7 @@ namespace owl::ws::detail {
         proceed(session);
     }
 
-    static void on_write_complete(h2o_socket_t* sock, const char* err) {
+    inline void on_write_complete(h2o_socket_t* sock, const char* err) {
         auto* const session = static_cast<Session*>(sock->data);
         free_batch(session);
         if (err != nullptr) {
@@ -221,7 +225,7 @@ namespace owl::ws::detail {
         maybe_reap(session);
     }
 
-    static coro::task<void> supervise(Session* session, coro::task<void> inner) {
+    inline coro::task<void> supervise(Session* session, coro::task<void> inner) {
         try {
             co_await std::move(inner);
         } catch (...) {
@@ -229,7 +233,7 @@ namespace owl::ws::detail {
         finish(session);
     }
 
-    static void finish(Session* session) noexcept {
+    inline void finish(Session* session) noexcept {
         session->finished = true;
         if (session->sock != nullptr && !session->closing) {
             wslay_event_queue_close(ctx_of(session), 1000, nullptr, 0);
@@ -243,7 +247,7 @@ namespace owl::ws::detail {
         session->handler = supervise(session, std::move(handler));
     }
 
-    static void engine_enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
+    inline void engine_enqueue(Session* session, std::string data, const Opcode opcode) noexcept {
         if (session->closing || session->dead) return;
         const wslay_event_msg message{
             static_cast<uint8_t>(opcode == Opcode::Binary ? WSLAY_BINARY_FRAME : WSLAY_TEXT_FRAME),
@@ -257,19 +261,19 @@ namespace owl::ws::detail {
         if (session->sock != nullptr && !session->proceeding) proceed(session);
     }
 
-    static void engine_close(Session* session) noexcept {
+    inline void engine_close(Session* session) noexcept {
         if (session->closing) return;
         session->closing = true;
         wslay_event_queue_close(ctx_of(session), 1000, nullptr, 0);
         if (session->sock != nullptr && !session->proceeding) proceed(session);
     }
 
-    static const SessionOps engine_ops{
+    inline constexpr SessionOps engine_ops{
         .enqueue = &engine_enqueue,
         .close = &engine_close,
     };
 
-    static void on_complete(void* data, h2o_socket_t* sock, size_t reqsize) {
+    inline void on_complete(void* data, h2o_socket_t* sock, size_t reqsize) {
         auto* const session = static_cast<Session*>(data);
         if (sock == nullptr) {
             destroy(session);
@@ -282,7 +286,7 @@ namespace owl::ws::detail {
         proceed(session);
     }
 
-    [[nodiscard]] static bool valid_key(h2o_req_t* req, const std::string_view key) noexcept {
+    [[nodiscard]] inline bool valid_key(h2o_req_t* req, const std::string_view key) noexcept {
         if (key.size() != 24) return false;
         // `=` is not in the base64url alphabet. A 16-byte nonce is 24 chars
         // with padding; stripping it is what makes decode report 16 bytes
@@ -293,7 +297,7 @@ namespace owl::ws::detail {
         return decoded.base != nullptr && decoded.len == 16;
     }
 
-    static void create_accept_key(char* dst, const char* client_key) {
+    inline void create_accept_key(char* dst, const char* client_key) {
         unsigned char digest[20];
         unsigned int digest_len = 0;
         unsigned char key_src[60];
