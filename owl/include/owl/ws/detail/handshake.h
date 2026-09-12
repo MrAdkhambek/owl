@@ -16,7 +16,6 @@
 namespace owl::ws::detail {
     [[nodiscard]] inline bool wants_websocket(const Request& req) {
         const auto* const raw = req.raw();
-        return raw->upgrade.base != nullptr
-            && util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket");
+        return raw->upgrade.base != nullptr && util::eq_ci(std::string_view{raw->upgrade.base, raw->upgrade.len}, "websocket");
     }
 }

@@ -39,7 +39,7 @@ namespace {
             peers_.insert_or_assign(sock, std::move(room.value));
         }
 
-        coro::task<void> on_message(const owl::ws::Socket, owl::ws::Message msg, const owl::Path<"room", std::string> room) {
+        coro::task<void> on_message(const owl::ws::Socket, owl::ws::Message msg, const owl::Path<"room", std::string>& room) {
             std::vector<owl::ws::Socket> peers;
             {
                 const auto lock = co_await mu_.scoped_lock();
@@ -49,7 +49,7 @@ namespace {
             }
             const auto opcode = msg.opcode();
             const auto payload = std::format("{}: {}", room.value, std::move(msg).data());
-            for (const auto peer : peers) {
+            for (const auto& peer : peers) {
                 co_await peer.send(std::string{payload}, opcode);
             }
         }

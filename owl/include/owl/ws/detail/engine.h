@@ -47,6 +47,7 @@
 #include <wslay/wslay.h>
 
 #include "coro/task.h"
+#include "owl/http/policy.h"
 #include "owl/http/request.h"
 #include "owl/ws/detail/handshake.h"
 #include "owl/ws/detail/session.h"
@@ -73,14 +74,9 @@ namespace owl::ws::detail {
         session->handle->open.store(false, std::memory_order_relaxed);
     }
 
-    inline void wake(Session* session) noexcept;
     inline void proceed(Session* session) noexcept;
-    inline void maybe_reap(Session* session) noexcept;
-    inline void destroy(Session* session) noexcept;
     inline void on_recv(h2o_socket_t* sock, const char* err);
     inline void on_write_complete(h2o_socket_t* sock, const char* err);
-    inline void finish(Session* session, std::uint16_t code) noexcept;
-    inline void fail(Session* session) noexcept;
 
     inline ssize_t recv_callback(wslay_event_context_ptr ctx, uint8_t* buf, size_t len, int, void* user_data) {
         auto* const session = static_cast<Session*>(user_data);
@@ -308,11 +304,7 @@ namespace owl::ws::detail {
     inline void on_recv(h2o_socket_t* sock, const char* err) {
         auto* const session = static_cast<Session*>(sock->data);
         if (err != nullptr) {
-            mark_closing(session);
-            session->dead = true;
-            h2o_socket_read_stop(sock);
-            wake(session);
-            maybe_reap(session);
+            fail(session);
             return;
         }
         session->last_seen = h2o_now(session->loop);
@@ -323,12 +315,21 @@ namespace owl::ws::detail {
         auto* const session = static_cast<Session*>(sock->data);
         free_batch(session);
         if (err != nullptr) {
-            mark_closing(session);
-            session->dead = true;
-            wake(session);
-        } else {
-            proceed(session);
+            fail(session);
+            return;
         }
+        proceed(session);
+        maybe_reap(session);
+    }
+
+    inline void finish(Session* session, const std::uint16_t code) noexcept {
+        session->finished = true;
+        if (session->sock != nullptr && !session->closing) {
+            wslay_event_queue_close(ctx_of(session), code, nullptr, 0);
+            mark_closing(session);
+        }
+        // A dropped connection must not go on writing its backlog.
+        if (session->sock != nullptr && !session->dead) proceed(session);
         maybe_reap(session);
     }
 
@@ -345,17 +346,6 @@ namespace owl::ws::detail {
         finish(session, code);
     }
 
-    inline void finish(Session* session, const std::uint16_t code) noexcept {
-        session->finished = true;
-        if (session->sock != nullptr && !session->closing) {
-            wslay_event_queue_close(ctx_of(session), code, nullptr, 0);
-            mark_closing(session);
-        }
-        // A dropped connection must not go on writing its backlog.
-        if (session->sock != nullptr && !session->dead) proceed(session);
-        maybe_reap(session);
-    }
-
     inline void adopt(Session* session, coro::task<void> handler) noexcept {
         session->handler = supervise(session, std::move(handler));
     }
@@ -364,15 +354,15 @@ namespace owl::ws::detail {
     // queued; either way nothing more will be delivered, and a handler
     // parked in recv() must hear that -- from its own kick, not from here.
     inline void enqueue_here(Session* session, std::string data, const Opcode opcode) noexcept {
-        if (session->closing || session->dead) return;
+        if (session->closing) return;
         if (session->unsent_bytes + data.size() > session->limits.max_unsent_bytes) {
             fail(session);
             return;
         }
-        const wslay_event_msg message{
-            static_cast<uint8_t>(opcode == Opcode::Binary ? WSLAY_BINARY_FRAME : WSLAY_TEXT_FRAME),
-            reinterpret_cast<const uint8_t*>(data.data()),
-            data.size(),
+        const wslay_event_msg message {
+            .opcode = static_cast<uint8_t>(opcode == Opcode::Binary ? WSLAY_BINARY_FRAME : WSLAY_TEXT_FRAME),
+            .msg = reinterpret_cast<const uint8_t*>(data.data()),
+            .msg_length = data.size(),
         };
         if (wslay_event_queue_msg(ctx_of(session), &message) != 0) {
             mark_closing(session);
@@ -508,31 +498,20 @@ namespace owl::ws::detail {
     // allocation and a query parse per upgrade. Still checks
     // wants_websocket: Response::websocket is public, and a plain GET route
     // may return one.
-    [[nodiscard]] inline int upgrade(Request& request, Session* session, h2o_multithread_receiver_t* const hop) noexcept {
+    [[nodiscard]] inline int upgrade(Request& request, std::unique_ptr<Session> session, h2o_multithread_receiver_t* const hop) noexcept {
         h2o_req_t* const req = request.raw();
-        if (!wants_websocket(request)) {
-            delete session;
-            return 400;
-        }
+        if (!wants_websocket(request)) return 400;
         if (request.header("Sec-WebSocket-Version") != "13") {
-            delete session;
             // RFC 6455 4.4: name the version this server speaks.
             h2o_add_header_by_str(&req->pool, &req->res.headers, H2O_STRLIT("sec-websocket-version"), 0, nullptr,
                                   H2O_STRLIT("13"));
             return 426;
         }
         const auto key = request.header("Sec-WebSocket-Key");
-        if (!key.has_value() || !valid_key(req, *key)) {
-            delete session;
-            return 400;
-        }
+        if (!key.has_value() || !valid_key(req, *key)) return 400;
 
         wslay_event_context_ptr ctx = nullptr;
-        if (wslay_event_context_server_init(&ctx, &wslay_callbacks, session) != 0) {
-            delete session;
-            return 500;
-        }
-        session->limits = default_limits;
+        if (wslay_event_context_server_init(&ctx, &wslay_callbacks, session.get()) != 0) return 500;
         wslay_event_config_set_max_recv_msg_length(ctx, session->limits.max_message_bytes);
         session->wslay = ctx;
         Handle* const handle = session->handle;
@@ -541,22 +520,22 @@ namespace owl::ws::detail {
         handle->ops = &engine_ops;
         session->loop = req->conn->ctx->loop;
         h2o_timer_init(&session->reaper.timer, on_reap);
-        session->reaper.session = session;
+        session->reaper.session = session.get();
         h2o_timer_init(&session->kicker.timer, on_kick);
-        session->kicker.session = session;
+        session->kicker.session = session.get();
         h2o_timer_init(&session->idle.timer, on_idle);
-        session->idle.session = session;
+        session->idle.session = session.get();
 
         char* const accept_key = static_cast<char*>(h2o_mem_alloc_pool(&req->pool, char, 29));
         create_accept_key(accept_key, key->data());
 
         req->res.status = 101;
-        req->res.reason = "Switching Protocols";
+        req->res.reason = policy::reason_phrase(101);
         h2o_add_header(&req->pool, &req->res.headers, H2O_TOKEN_UPGRADE, nullptr, H2O_STRLIT("websocket"));
         h2o_add_header_by_str(&req->pool, &req->res.headers, H2O_STRLIT("sec-websocket-accept"), 0, nullptr,
                               accept_key, std::strlen(accept_key));
 
-        h2o_http1_upgrade(req, nullptr, 0, on_complete, session);
+        h2o_http1_upgrade(req, nullptr, 0, on_complete, session.release());
         return 101;
     }
 }

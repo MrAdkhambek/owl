@@ -124,7 +124,7 @@ namespace owl::ws::detail {
         void* wslay = nullptr;                // wslay_event_context_ptr, opaque here
         std::array<h2o_iovec_t, 4> batch{};   // writes in flight, owned until they complete
         std::size_t batched = 0;
-        Limits limits;                        // copied from default_limits at upgrade
+        Limits limits = default_limits;       // copied from default_limits at upgrade
         std::size_t pending_bytes = 0;        // the payload bytes sitting in pending
         std::size_t unsent_bytes = 0;         // queued for the peer, not yet handed to h2o
         std::uint64_t last_seen = 0;          // h2o_now() of the last inbound byte
@@ -134,7 +134,7 @@ namespace owl::ws::detail {
         SessionTimer idle;                    // pings a quiet peer, drops a dead one
 
         bool closing = false;                 // nothing more will be delivered
-        bool dead = false;                    // the socket failed; nothing more can be written
+        bool dead = false;                    // the socket failed; nothing more can be written (closing too)
         bool finished = false;                // the handler has returned
         bool reading_paused = false;          // stopped at max_pending_bytes; park() restarts it
     };

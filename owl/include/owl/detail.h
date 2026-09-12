@@ -93,8 +93,7 @@ namespace owl::detail {
                 auto session = std::make_unique<ws::detail::Session>();
                 const auto upgrade = std::move(response).stage_upgrade(request->raw());
                 ws::detail::adopt(session.get(), upgrade->make(session.get()));
-                // upgrade() owns the session either way: it deletes it on failure.
-                const int status = ws::detail::upgrade(*request, session.release(), &context->ws_hop);
+                const int status = ws::detail::upgrade(*request, std::move(session), &context->ws_hop);
                 exchange.matched(*request, status);
                 if (status == 426) {
                     // KEEP_HEADERS: the Sec-WebSocket-Version upgrade() staged is the answer.

@@ -38,6 +38,7 @@
 // same way sync-versus-async is.
 
 #include <concepts>
+#include <coroutine>
 #include <exception>
 #include <memory>
 #include <optional>
@@ -121,14 +122,16 @@ namespace owl::ws::detail {
     concept NamesOnDisconnect = requires { &C::on_disconnect; };
 
     // Calls a method whether it is sync or async, so the loop below does
-    // not need two spellings of every call.
+    // not need two spellings of every call. Not a coroutine itself: a sync
+    // method runs here and hands back an awaitable that never suspends, so
+    // each message costs no frame beyond the method's own.
     template <typename Invocable>
-    coro::task<void> invoke(Invocable&& call) {
+    [[nodiscard]] auto invoke(Invocable&& call) {
         if constexpr (std::is_void_v<decltype(call())>) {
             call();
-            co_return;
+            return std::suspend_never{};
         } else {
-            co_await call();
+            return call();
         }
     }
 

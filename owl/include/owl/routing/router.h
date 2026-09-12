@@ -180,13 +180,7 @@ namespace owl {
             static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
             check_args<Pattern, Args...>();
             ws_checks<Args...>();
-            if (!insert_ws(Pattern.view(), [handler](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
-                auto args = extract_all<Args...>(ctx, req);
-                if (!args) [[unlikely]] co_return to_response(std::move(args).error());
-                co_return Response::websocket(std::make_shared<detail::WsRoute<Args...>>(handler, *std::move(args)));
-            })) {
-                throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
-            }
+            mount_ws<Pattern, Args...>(handler);
             return std::move(*this);
         }
 
@@ -219,18 +213,14 @@ namespace owl {
         template <fstr::fstr Pattern, typename C, typename... CtorArgs> requires (!(sizeof...(CtorArgs) == 1 && (std::is_same_v<
             std::remove_cvref_t<CtorArgs>, std::shared_ptr<C>> && ...)))
         [[nodiscard]] Router ws(CtorArgs... args) && {
-            static_assert(detail::parse_pattern(Pattern.view()).ok, "invalid route pattern");
             static_assert(std::is_constructible_v<C, CtorArgs...>, "the controller cannot be constructed from these arguments");
-            static_assert(ws::detail::is_extractor_tuple_v<ws::detail::extractors_of_t<C>>,
-                          "a controller's Extractors must be a std::tuple<...> of extractors");
 
             // Constructed here, once -- not built per request. Every
             // connection on this route shares this one instance, which is
             // what makes members shared state rather than per-connection
             // state, and what requires the controller to be safe for
             // concurrent use when threads > 1.
-            register_controller<Pattern, C>(std::make_shared<C>(std::move(args)...), static_cast<ws::detail::extractors_of_t<C>*>(nullptr));
-            return std::move(*this);
+            return std::move(*this).template ws<Pattern, C>(std::make_shared<C>(std::move(args)...));
         }
 
         template <typename F>
@@ -367,7 +357,7 @@ namespace owl {
         // an explicit template argument list cannot do on its own.
         //
         // From here on this is the coroutine form's registration with a
-        // controller in place of a function pointer -- the same
+        // WsController in place of a function pointer -- the same
         // extraction, the same checks, the same pre-upgrade rejection.
         template <fstr::fstr Pattern, typename C, typename... Args>
         void register_controller(std::shared_ptr<C> instance, std::tuple<Args...>*) {
@@ -378,12 +368,17 @@ namespace owl {
             check_args<Pattern, Args...>();
             ws_checks<Args...>();
             ws_controller_checks<C, Args...>();
+            mount_ws<Pattern, Args...>(detail::WsController<C, Args...>{std::move(instance)});
+        }
 
-            if (!insert_ws(Pattern.view(), [instance = std::move(instance)](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
+        // Where both .ws forms end: extract per request, reject before the
+        // upgrade, and bind what was extracted to the route's start.
+        template <fstr::fstr Pattern, typename... Args, typename Start>
+        void mount_ws(Start start) {
+            if (!insert_ws(Pattern.view(), [start = std::move(start)](const Request& req, const Context<S>& ctx) -> coro::task<Response> {
                 auto args = extract_all<Args...>(ctx, req);
                 if (!args) [[unlikely]] co_return to_response(std::move(args).error());
-                co_return Response::websocket(
-                    std::make_shared<detail::WsController<C, Args...>>(instance, *std::move(args)));
+                co_return Response::websocket(std::make_unique<detail::WsRoute<Start, Args...>>(start, *std::move(args)));
             })) {
                 throw std::invalid_argument(std::string("cannot register websocket: ").append(Pattern.view()));
             }

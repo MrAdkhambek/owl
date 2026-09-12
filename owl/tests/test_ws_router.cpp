@@ -60,7 +60,8 @@ TEST(WsRoutes, ConnectionFrameOwnsTheController) {
     {
         auto instance = std::make_shared<Probe>();
         weak = instance;
-        const auto upgrade = std::make_shared<owl::detail::WsController<Probe>>(std::move(instance), std::tuple<>{});
+        const auto upgrade = std::make_unique<owl::detail::WsRoute<owl::detail::WsController<Probe>>>(
+            owl::detail::WsController<Probe>{std::move(instance)}, std::tuple<>{});
         connection.emplace(upgrade->make(session.get()));
     }
     EXPECT_FALSE(weak.expired());

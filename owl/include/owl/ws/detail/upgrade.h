@@ -21,5 +21,5 @@ namespace owl::detail {
         [[nodiscard]] virtual coro::task<void> make(ws::detail::Session* session) = 0;
     };
 
-    using WsUpgradePtr = std::shared_ptr<WsUpgrade>;
+    using WsUpgradePtr = std::unique_ptr<WsUpgrade>;
 }
