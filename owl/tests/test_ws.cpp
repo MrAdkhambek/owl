@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -18,6 +19,7 @@
 
 #include <arpa/inet.h>
 #include <csignal>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -229,7 +231,7 @@ namespace {
             return read_http();
         }
 
-        void send_frame(const std::uint8_t opcode, const std::string_view payload) {
+        [[nodiscard]] static std::string frame(const std::uint8_t opcode, const std::string_view payload) {
             std::string out;
             out.push_back(static_cast<char>(0x80 | opcode));
             constexpr std::array<unsigned char, 4> mask{0x37, 0xfa, 0x21, 0x3d};
@@ -245,7 +247,11 @@ namespace {
             for (std::size_t i = 0; i < n; ++i) {
                 out.push_back(static_cast<char>(static_cast<unsigned char>(payload[i]) ^ mask[i % 4]));
             }
-            send_all(out);
+            return out;
+        }
+
+        void send_frame(const std::uint8_t opcode, const std::string_view payload) const {
+            send_all(frame(opcode, payload));
         }
 
         [[nodiscard]] bool read_frame(std::uint8_t& opcode, std::string& payload) {
@@ -692,4 +698,91 @@ TEST(Ws, SocketKeptPastItsConnectionIsInert) {
     (void)keeper->kept->send("late");
     keeper->kept->close();
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
+}
+
+namespace {
+    // Lowers the engine's limits for one test. Declare it before the
+    // LiveWorker, so the workers start after the write and stop before the
+    // restore.
+    struct LimitsGuard final {
+        owl::ws::detail::Limits saved = owl::ws::detail::default_limits;
+
+        explicit LimitsGuard(const owl::ws::detail::Limits next) {
+            owl::ws::detail::default_limits = next;
+        }
+
+        ~LimitsGuard() {
+            owl::ws::detail::default_limits = saved;
+        }
+
+        LimitsGuard(const LimitsGuard&) = delete;
+        LimitsGuard& operator=(const LimitsGuard&) = delete;
+    };
+
+    std::atomic<int> flood_sent{-1};
+
+    coro::task<void> flood(owl::ws::Socket sock) {
+        const std::string chunk(64 * 1024, 'x');
+        int sent = 0;
+        while (sock.open() && sent < 1024) {
+            co_await sock.send(std::string{chunk}, owl::ws::Opcode::Binary);
+            ++sent;
+        }
+        flood_sent.store(sent);
+    }
+
+    std::atomic<bool> stall_done{false};
+
+    coro::task<void> stall(owl::ws::Socket sock, const owl::loop_scheduler& loop) {
+        co_await loop.schedule_after(std::chrono::milliseconds(1500));
+        while (co_await sock.recv()) {
+        }
+        stall_done.store(true);
+    }
+}
+
+TEST(Ws, UnreadSendsPastTheCapDropTheConnection) {
+    const LimitsGuard guard{{.max_unsent_bytes = 256 * 1024}};
+    flood_sent.store(-1);
+    auto router = owl::Router<App>::make().ws<"/flood">(flood);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    ASSERT_EQ(client.handshake("/flood").status, 101);
+    ASSERT_TRUE(wait_for([] { return flood_sent.load() >= 0; }));
+    EXPECT_LT(flood_sent.load(), 1024);
+}
+
+// The handler sleeps before its first recv(); a peer that keeps writing
+// should be held back by TCP once max_pending_bytes is waiting, not read
+// into memory.
+TEST(Ws, UnreadBacklogPausesReading) {
+    const LimitsGuard guard{{.max_pending_bytes = 64 * 1024}};
+    stall_done.store(false);
+    auto router = owl::Router<App>::make().ws<"/stall">(stall);
+    LiveWorker worker{router};
+    {
+        Client client{worker.port};
+        ASSERT_EQ(client.handshake("/stall").status, 101);
+        ::fcntl(client.fd, F_SETFL, ::fcntl(client.fd, F_GETFL) | O_NONBLOCK);
+        const std::string frame = Client::frame(0x2, std::string(16 * 1024, 'x'));
+        constexpr std::size_t flood_bytes = 64u * 1024 * 1024;
+        std::size_t accepted = 0;
+        std::size_t off = 0;
+        auto progress = std::chrono::steady_clock::now();
+        while (accepted < flood_bytes
+               && std::chrono::steady_clock::now() - progress < std::chrono::milliseconds(300)) {
+            const auto n = ::send(client.fd, frame.data() + off, frame.size() - off, 0);
+            if (n > 0) {
+                accepted += static_cast<std::size_t>(n);
+                off = (off + static_cast<std::size_t>(n)) % frame.size();
+                progress = std::chrono::steady_clock::now();
+            } else if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            } else {
+                break;
+            }
+        }
+        EXPECT_LT(accepted, flood_bytes / 2);
+    }
+    EXPECT_TRUE(wait_for([] { return stall_done.load(); }, std::chrono::seconds(10)));
 }

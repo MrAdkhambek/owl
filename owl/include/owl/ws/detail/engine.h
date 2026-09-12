@@ -30,6 +30,7 @@
 // and an inline function that names a static one is an ODR violation in
 // every translation unit after the first.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -51,7 +52,6 @@
 #include "owl/ws/detail/session.h"
 
 namespace owl::ws::detail {
-    inline constexpr std::size_t max_message_bytes = 16 * 1024 * 1024;
     inline constexpr char ws_guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 
     [[nodiscard]] inline wslay_event_context_ptr ctx_of(const Session* session) noexcept {
@@ -80,6 +80,7 @@ namespace owl::ws::detail {
     inline void on_recv(h2o_socket_t* sock, const char* err);
     inline void on_write_complete(h2o_socket_t* sock, const char* err);
     inline void finish(Session* session, std::uint16_t code) noexcept;
+    inline void fail(Session* session) noexcept;
 
     inline ssize_t recv_callback(wslay_event_context_ptr ctx, uint8_t* buf, size_t len, int, void* user_data) {
         auto* const session = static_cast<Session*>(user_data);
@@ -104,12 +105,15 @@ namespace owl::ws::detail {
         buf.len = len;
         std::memcpy(buf.base, data, len);
         ++session->batched;
+        // Frame headers are counted too, so the clamp keeps it from wrapping.
+        session->unsent_bytes -= std::min(session->unsent_bytes, len);
         return static_cast<ssize_t>(len);
     }
 
     inline void on_msg_recv(wslay_event_context_ptr, const struct wslay_event_on_msg_recv_arg* arg, void* user_data) {
         if (arg->opcode != WSLAY_TEXT_FRAME && arg->opcode != WSLAY_BINARY_FRAME) return;
         auto* const session = static_cast<Session*>(user_data);
+        session->pending_bytes += arg->msg_length;
         session->pending.emplace_back(
             std::string(reinterpret_cast<const char*>(arg->msg), arg->msg_length),
             arg->opcode == WSLAY_BINARY_FRAME ? Opcode::Binary : Opcode::Text);
@@ -179,6 +183,20 @@ namespace owl::ws::detail {
         if (!h2o_timer_is_linked(&session->kicker.timer)) h2o_timer_link(session->loop, 0, &session->kicker.timer);
     }
 
+    // Drops the connection with no close handshake: the frame that could say
+    // why would sit behind everything the peer is not reading. The handler
+    // hears about it from its kick.
+    inline void fail(Session* session) noexcept {
+        mark_closing(session);
+        session->dead = true;
+        if (session->sock != nullptr) h2o_socket_read_stop(session->sock);
+        kick(session);
+    }
+
+    inline void engine_resume_reading(Session* session) noexcept {
+        kick(session);
+    }
+
     // The write half of proceed() and nothing else: no read, no wake. So it
     // is safe from inside any handler, including another connection's --
     // which is exactly where a broadcast calls it.
@@ -193,6 +211,10 @@ namespace owl::ws::detail {
         if (session->batched > 0) {
             h2o_socket_write(session->sock, session->batch.data(), session->batched, on_write_complete);
         }
+    }
+
+    [[nodiscard]] inline bool inbox_full(const Session* session) noexcept {
+        return session->pending_bytes >= session->limits.max_pending_bytes;
     }
 
     inline void proceed(Session* session) noexcept {
@@ -210,7 +232,7 @@ namespace owl::ws::detail {
                     handled = 1;
                 }
             }
-            if (session->sock->input->size != 0 && wslay_event_want_read(ctx)) {
+            if (session->sock->input->size != 0 && wslay_event_want_read(ctx) && !inbox_full(session)) {
                 if (wslay_event_recv(ctx) != 0) {
                     close = true;
                     break;
@@ -223,8 +245,15 @@ namespace owl::ws::detail {
             if (!h2o_socket_is_writing(session->sock) && session->batched > 0) {
                 h2o_socket_write(session->sock, session->batch.data(), session->batched, on_write_complete);
             }
+            session->reading_paused = false;
             if (wslay_event_want_read(ctx)) {
-                h2o_socket_read_start(session->sock, on_recv);
+                if (inbox_full(session)) {
+                    // The handler is behind: let TCP hold the rest.
+                    session->reading_paused = true;
+                    h2o_socket_read_stop(session->sock);
+                } else {
+                    h2o_socket_read_start(session->sock, on_recv);
+                }
             } else if (h2o_socket_is_writing(session->sock) || wslay_event_want_write(ctx)) {
                 h2o_socket_read_stop(session->sock);
             } else {
@@ -285,7 +314,8 @@ namespace owl::ws::detail {
             wslay_event_queue_close(ctx_of(session), code, nullptr, 0);
             mark_closing(session);
         }
-        if (session->sock != nullptr) proceed(session);
+        // A dropped connection must not go on writing its backlog.
+        if (session->sock != nullptr && !session->dead) proceed(session);
         maybe_reap(session);
     }
 
@@ -298,6 +328,10 @@ namespace owl::ws::detail {
     // parked in recv() must hear that -- from its own kick, not from here.
     inline void enqueue_here(Session* session, std::string data, const Opcode opcode) noexcept {
         if (session->closing || session->dead) return;
+        if (session->unsent_bytes + data.size() > session->limits.max_unsent_bytes) {
+            fail(session);
+            return;
+        }
         const wslay_event_msg message{
             static_cast<uint8_t>(opcode == Opcode::Binary ? WSLAY_BINARY_FRAME : WSLAY_TEXT_FRAME),
             reinterpret_cast<const uint8_t*>(data.data()),
@@ -308,6 +342,7 @@ namespace owl::ws::detail {
             kick(session);
             return;
         }
+        session->unsent_bytes += data.size();
         flush(session);
     }
 
@@ -389,6 +424,7 @@ namespace owl::ws::detail {
     inline constexpr SessionOps engine_ops{
         .enqueue = &engine_enqueue,
         .close = &engine_close,
+        .resume_reading = &engine_resume_reading,
     };
 
     inline void on_complete(void* data, h2o_socket_t* sock, size_t reqsize) {
@@ -457,7 +493,8 @@ namespace owl::ws::detail {
             delete session;
             return 500;
         }
-        wslay_event_config_set_max_recv_msg_length(ctx, max_message_bytes);
+        session->limits = default_limits;
+        wslay_event_config_set_max_recv_msg_length(ctx, session->limits.max_message_bytes);
         session->wslay = ctx;
         Handle* const handle = session->handle;
         handle->owner = std::this_thread::get_id();

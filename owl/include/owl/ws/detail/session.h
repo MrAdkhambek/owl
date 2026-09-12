@@ -11,6 +11,7 @@
 #include <atomic>
 #include <coroutine>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
@@ -27,6 +28,25 @@ namespace owl::ws::detail {
     struct Session;
     struct Handle;
 
+    // What one connection may hold. Copied into the Session at upgrade, so
+    // changing default_limits never races a live connection.
+    struct Limits final {
+        // One inbound message. wslay fails the connection with 1009 past it.
+        std::size_t max_message_bytes = 16 * 1024 * 1024;
+        // Delivered but not yet taken by the handler. Reading pauses here
+        // and resumes when the handler next parks in recv(), so a peer that
+        // outruns its handler is held back by TCP, not by the heap.
+        std::size_t max_pending_bytes = 16 * 1024 * 1024;
+        // Queued for the peer. Past it the connection is dropped: send()
+        // does not suspend yet, so a peer that stops reading would grow this
+        // without bound.
+        std::size_t max_unsent_bytes = 64 * 1024 * 1024;
+    };
+
+    // Process-wide defaults. Not yet a Server option; the tests lower them
+    // before their workers start.
+    inline Limits default_limits{};
+
     // h2o_timer_t carries no user data, so a callback walks back from the
     // timer with H2O_STRUCT_FROM_MEMBER -- which needs a standard-layout
     // struct, and Session (a deque, a task) is not one.
@@ -40,6 +60,7 @@ namespace owl::ws::detail {
     struct SessionOps final {
         void (*enqueue)(Handle*, std::string, Opcode) noexcept;
         void (*close)(Handle*) noexcept;
+        void (*resume_reading)(Session*) noexcept;
     };
 
     // What every Socket copy points at, and what outlives the Session. A
@@ -99,12 +120,16 @@ namespace owl::ws::detail {
         void* wslay = nullptr;                // wslay_event_context_ptr, opaque here
         std::array<h2o_iovec_t, 4> batch{};   // writes in flight, owned until they complete
         std::size_t batched = 0;
+        Limits limits;                        // copied from default_limits at upgrade
+        std::size_t pending_bytes = 0;        // the payload bytes sitting in pending
+        std::size_t unsent_bytes = 0;         // queued for the peer, not yet handed to h2o
         SessionTimer reaper;                  // destroys the session on the loop's next pass
         SessionTimer kicker;                  // runs proceed() on the loop's next pass
 
         bool closing = false;                 // nothing more will be delivered
         bool dead = false;                    // the socket failed; nothing more can be written
         bool finished = false;                // the handler has returned
+        bool reading_paused = false;          // stopped at max_pending_bytes; park() restarts it
     };
 
     [[nodiscard]] inline bool has_message(const Session* session) noexcept {
@@ -119,11 +144,18 @@ namespace owl::ws::detail {
         if (session->pending.empty()) return std::nullopt;
         Message message = std::move(session->pending.front());
         session->pending.pop_front();
+        session->pending_bytes -= message.size();
         return message;
     }
 
+    // Parking means pending is empty, so a paused read may resume. It
+    // resumes from the loop, not from here: inline, the engine would run
+    // inside the handler's own await_suspend.
     inline void park(Session* session, const std::coroutine_handle<> waiter) noexcept {
         session->waiter = waiter;
+        if (session->reading_paused && session->handle->ops != nullptr) {
+            session->handle->ops->resume_reading(session);
+        }
     }
 
     inline void enqueue(Handle* handle, std::string data, const Opcode opcode) noexcept {
