@@ -786,3 +786,42 @@ TEST(Ws, UnreadBacklogPausesReading) {
     }
     EXPECT_TRUE(wait_for([] { return stall_done.load(); }, std::chrono::seconds(10)));
 }
+
+TEST(Ws, SilentPeerIsPingedThenDropped) {
+    const LimitsGuard guard{{.idle_ping_ms = 100}};
+    peer_gone.store(false);
+    auto router = owl::Router<App>::make().ws<"/vanish">(vanish);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    ASSERT_EQ(client.handshake("/vanish").status, 101);
+    std::uint8_t opcode = 0;
+    std::string payload;
+    EXPECT_TRUE(client.read_frame(opcode, payload));
+    EXPECT_EQ(opcode, 0x9);
+    EXPECT_TRUE(wait_for([] { return peer_gone.load(); }));
+}
+
+TEST(Ws, PongKeepsAQuietPeerConnected) {
+    const LimitsGuard guard{{.idle_ping_ms = 100}};
+    auto router = owl::Router<App>::make().ws<"/echo">(echo);
+    LiveWorker worker{router};
+    Client client{worker.port};
+    ASSERT_EQ(client.handshake("/echo").status, 101);
+    for (int i = 0; i < 5; ++i) {
+        std::uint8_t opcode = 0;
+        std::string payload;
+        ASSERT_TRUE(client.read_frame(opcode, payload));
+        ASSERT_EQ(opcode, 0x9);
+        client.send_frame(0xA, payload);
+    }
+    client.send_frame(0x1, "still here");
+    std::uint8_t opcode = 0;
+    std::string payload;
+    // A ping may still land ahead of the echo; skip it.
+    while (client.read_frame(opcode, payload) && opcode == 0x9) {
+    }
+    EXPECT_EQ(opcode, 0x1);
+    EXPECT_EQ(payload, "still here");
+    client.send_close();
+    client.read_close_and_eof();
+}

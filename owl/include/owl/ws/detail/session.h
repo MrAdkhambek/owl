@@ -41,6 +41,10 @@ namespace owl::ws::detail {
         // does not suspend yet, so a peer that stops reading would grow this
         // without bound.
         std::size_t max_unsent_bytes = 64 * 1024 * 1024;
+        // Inbound silence before a ping. A ping still unanswered one interval
+        // later drops the peer, as does a close handshake unanswered for two:
+        // a half-open TCP peer never errors, so this is the only way out.
+        std::uint64_t idle_ping_ms = 30'000;
     };
 
     // Process-wide defaults. Not yet a Server option; the tests lower them
@@ -123,8 +127,11 @@ namespace owl::ws::detail {
         Limits limits;                        // copied from default_limits at upgrade
         std::size_t pending_bytes = 0;        // the payload bytes sitting in pending
         std::size_t unsent_bytes = 0;         // queued for the peer, not yet handed to h2o
+        std::uint64_t last_seen = 0;          // h2o_now() of the last inbound byte
+        std::uint64_t ping_sent = 0;          // h2o_now() of the unanswered ping; 0 if none
         SessionTimer reaper;                  // destroys the session on the loop's next pass
         SessionTimer kicker;                  // runs proceed() on the loop's next pass
+        SessionTimer idle;                    // pings a quiet peer, drops a dead one
 
         bool closing = false;                 // nothing more will be delivered
         bool dead = false;                    // the socket failed; nothing more can be written

@@ -136,7 +136,9 @@ namespace owl::ws::detail {
     }
 
     inline void destroy(Session* session) noexcept {
-        if (h2o_timer_is_linked(&session->kicker.timer)) h2o_timer_unlink(&session->kicker.timer);
+        for (h2o_timer_t* const timer : {&session->kicker.timer, &session->idle.timer}) {
+            if (h2o_timer_is_linked(timer)) h2o_timer_unlink(timer);
+        }
         if (session->sock != nullptr) {
             h2o_socket_close(session->sock);
             session->sock = nullptr;
@@ -194,6 +196,7 @@ namespace owl::ws::detail {
     }
 
     inline void engine_resume_reading(Session* session) noexcept {
+        session->last_seen = h2o_now(session->loop);
         kick(session);
     }
 
@@ -211,6 +214,39 @@ namespace owl::ws::detail {
         if (session->batched > 0) {
             h2o_socket_write(session->sock, session->batch.data(), session->batched, on_write_complete);
         }
+    }
+
+    // One timer per connection, relinked each interval rather than on every
+    // read: noting last_seen is a store, relinking is list surgery.
+    //
+    // A tick that finds a ping unanswered -- no inbound byte since it was
+    // sent -- drops the peer, and so does a closing connection that has
+    // heard nothing for two intervals. Otherwise a tick after an interval of
+    // silence sends a ping. Any inbound byte is an answer, a pong included.
+    // While reading is paused the handler is behind, not the peer, so the
+    // peer is not judged.
+    inline void on_idle(h2o_timer_t* entry) {
+        auto* const session = H2O_STRUCT_FROM_MEMBER(SessionTimer, timer, entry)->session;
+        if (session->dead) return;
+        const std::uint64_t interval = session->limits.idle_ping_ms;
+        if (session->reading_paused) {
+            session->ping_sent = 0;
+        } else {
+            const std::uint64_t now = h2o_now(session->loop);
+            const bool unanswered = session->ping_sent != 0 && session->last_seen < session->ping_sent;
+            const bool stale_close = session->closing && now - session->last_seen >= 2 * interval;
+            if (unanswered || stale_close) {
+                fail(session);
+                return;
+            }
+            session->ping_sent = 0;
+            if (!session->closing && now - session->last_seen >= interval) {
+                const wslay_event_msg ping{WSLAY_PING, nullptr, 0};
+                if (wslay_event_queue_msg(ctx_of(session), &ping) == 0) flush(session);
+                session->ping_sent = now;
+            }
+        }
+        h2o_timer_link(session->loop, interval, &session->idle.timer);
     }
 
     [[nodiscard]] inline bool inbox_full(const Session* session) noexcept {
@@ -279,6 +315,7 @@ namespace owl::ws::detail {
             maybe_reap(session);
             return;
         }
+        session->last_seen = h2o_now(session->loop);
         proceed(session);
     }
 
@@ -437,6 +474,8 @@ namespace owl::ws::detail {
         sock->data = session;
         h2o_buffer_consume(&sock->input, reqsize);
         session->handle->open.store(true, std::memory_order_relaxed);
+        session->last_seen = h2o_now(session->loop);
+        h2o_timer_link(session->loop, session->limits.idle_ping_ms, &session->idle.timer);
         session->handler.start();
         proceed(session);
     }
@@ -505,6 +544,8 @@ namespace owl::ws::detail {
         session->reaper.session = session;
         h2o_timer_init(&session->kicker.timer, on_kick);
         session->kicker.session = session;
+        h2o_timer_init(&session->idle.timer, on_idle);
+        session->idle.session = session;
 
         char* const accept_key = static_cast<char*>(h2o_mem_alloc_pool(&req->pool, char, 29));
         create_accept_key(accept_key, key->data());
